@@ -1,0 +1,42 @@
+<launch>
+
+  <include file="$(find pr2_machine)/$(env ROBOT).machine" />
+  
+  <!-- send additional description parameters -->
+  <include file="$(find pr2_arm_navigation_config)/launch/pr2_planning_environment.launch" />
+
+  <node pkg="pr2_mechanism_controllers" type="send_periodic_cmd_srv.py" name="laser_tilt_controller_3dnav_params" args="laser_tilt_controller linear 2 .75 .25" />
+
+  <!-- convert tilt laser scan to pointcloud -->
+  <node machine="c2" pkg="laser_filters" type="scan_to_cloud_filter_chain" output="screen" name="scan_to_cloud_filter_chain_tilt_laser">
+    <remap from="scan" to="/tilt_scan"/>
+    <remap from="cloud_filtered" to="/tilt_scan_cloud"/>
+    <param name="target_frame" type="string" value="base_footprint"/>
+    <rosparam command="load" file="$(find pr2_arm_navigation_perception)/config/shadow_filter.yaml" />
+  </node>
+
+  <node pkg="point_cloud_converter" name="point_cloud_converter_preself" type="point_cloud_converter">
+	<remap from="/points_in" to="/tilt_scan_cloud" />
+        <remap from="/points2_out" to="/tilt_scan_cloud2" />
+  </node>
+
+  <!-- self filter laser scans -->
+  <node pkg="robot_self_filter" type="self_filter" respawn="true" name="laser_self_filter" output="screen">
+     <remap from="cloud_in" to="/tilt_scan_cloud2" />
+     <remap from="cloud_out" to="/tilt_scan_cloud_filtered2" />
+     <param name="sensor_frame" type="string" value="laser_tilt_link" />	
+     <param name="subsample_value" type="double" value=".01"/>
+     <rosparam command="load" file="$(find pr2_arm_navigation_perception)/config/self_filter.yaml" />
+  </node>
+
+  <!-- self filter stereo points -->
+  <node pkg="robot_self_filter" type="self_filter" respawn="true" name="stereo_self_filter" output="screen">
+     <remap from="cloud_in" to="/narrow_stereo/points2" />
+     <remap from="cloud_out" to="/narrow_stereo/points_filtered2" />
+     
+     <param name="subsample_value" type="double" value=".02"/>
+     <rosparam command="load" file="$(find pr2_arm_navigation_perception)/config/self_filter.yaml" />
+     <rosparam command="load" file="$(find 3d_nav_gazebo)/config/shadow_filter.yaml" />
+  </node>
+     
+</launch>

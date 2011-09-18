@@ -1,0 +1,13 @@
+spine_costmap: 
+  global_frame: map
+  robot_base_frame: base_link
+  update_frequency: 2.0
+  publish_frequency: 0.0
+  static_map: true
+  rolling_window: false
+  footprint: [[-0.375, -0.375], [-0.375, 0.375], [0.07, 0.375], [0.07, -0.375]]
+  inflation_radius: 0.681
+#footprint: [[-0.325, -0.325], [-0.325, 0.325], [0.07, 0.325], [0.07, -0.325]]
+#inflation_radius: 0.61
+  cost_scaling_factor: 5.0
+  map_topic: spine_map

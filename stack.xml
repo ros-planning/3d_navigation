@@ -1,0 +1,28 @@
+<stack>
+  <description brief="3d_navigation - Navigation in complex environments with 3D collision checks.">
+  This stack provides navigation capabilities in complex environments with 3D collision checks. This
+  allows for navigation in any robot configuration (e.g. with untucked arms) and for various mobile manipulation tasks. 
+  </description>
+  <author>Maintained by Armin Hornung</author>
+  <license>BSD</license>  
+  <review status="unreviewed" notes=""/>
+  <url>http://ros.org/wiki/3d_navigation</url>
+  <depend stack="common" /> <!-- pluginlib -->
+  <depend stack="common_msgs" /> <!-- nav_msgs, geometry_msgs, visualization_msgs -->
+  <depend stack="driver_common" /> <!-- dynamic_reconfigure -->
+  <depend stack="geometry" /> <!-- tf -->
+  <depend stack="motion_planners" /> <!-- sbpl -->
+  <depend stack="motion_planning_common" /> <!-- planning_environment, planning_environment_msgs, planning_models, mapping_msgs, robot_self_filter -->
+  <depend stack="navigation" /> <!-- move_base, base_local_planner, nav_core, fake_localization, costmap_2d -->
+  <depend stack="navigation_experimental" /> <!-- sbpl_lattice_planner, pose_follower -->
+  <depend stack="octomap_mapping" /> <!-- octomap, octomap_ros, octomap_server -->
+  <depend stack="perception_pcl" /> <!-- pcl -->
+  <depend stack="pr2_apps" /> <!-- pr2_tuckarm, pr2_teleop_general -->
+  <depend stack="pr2_arm_navigation" /> <!-- pr2_arm_navigation_config -->
+  <depend stack="pr2_common_actions" /> <!-- pr2_common_action_msgs -->
+  <depend stack="pr2_simulator" /> <!-- pr2_gazebo -->
+  <depend stack="ros" />
+  <depend stack="ros_comm" /> <!-- rospy, roscpp -->
+  <depend stack="simulator_gazebo" /> <!-- gazebo -->
+
+</stack>

@@ -1,0 +1,22 @@
+<launch>
+
+  <node pkg="topic_tools" type="throttle" name="throttle_right_arm_state" args="messages r_arm_controller/state 1.0" />
+
+  <node pkg="topic_tools" type="throttle" name="throttle_left_arm_state" args="messages l_arm_controller/state 1.0" />
+
+  <node pkg="topic_tools" type="throttle" name="throttle_joy" args="messages joy 5.0" />
+
+  <node pkg="3d_nav_executive" type="record_poses" name="record_arm" output="screen" >
+
+    <param name="arm_name" value="right_arm" />
+
+    <!--
+    <param name="left_filename" value="$(find poop_scoop)/motions/left_motion.txt" />
+    <param name="right_filename" value="$(find poop_scoop)/motions/right_motion.txt" />
+    -->
+
+
+  </node>
+
+</launch>
+

@@ -1,0 +1,44 @@
+#START VOXEL STUFF
+map_type: voxel
+origin_z: 0.0
+z_resolution: 0.1125
+z_voxels: 16
+unknown_threshold: 16
+mark_threshold: 0
+#END VOXEL STUFF
+
+transform_tolerance: 0.2
+max_obstacle_height: 2.0
+obstacle_range: 4.0
+raytrace_range: 5.0
+# regular footprint: (sbpl env. computes its own)
+footprint: [[-0.325, -0.325], [-0.325, 0.325], [0.325, 0.325], [0.46, 0.0], [0.325, -0.325]]
+# larger one also covering arms:
+#footprint: [[-0.325, -0.325], [-0.325, 0.325], [0.7, 0.35], [0.7, 0.0], [0.7, -0.35]]
+
+footprint_padding: 0.02
+inflation_radius: 0.1
+cost_scaling_factor: 10.0
+lethal_cost_threshold: 100
+
+
+observation_sources: []
+#observation_sources: occupied_octomap base_scan 
+
+base_scan_marking: {sensor_frame: base_laser_link, topic: /base_scan_marking, data_type: PointCloud, expected_update_rate: 0.2,
+  observation_persistence: 0.0, marking: true, clearing: false, min_obstacle_height: 0.08, max_obstacle_height: 2.0}
+
+base_scan: {sensor_frame: base_laser_link, topic: /base_scan, data_type: LaserScan, expected_update_rate: 0.2,
+             observation_persistence: 0.0, marking: true, clearing: true, min_obstacle_height: -0.10, max_obstacle_height: 2.0}
+
+tilt_scan: {sensor_frame: laser_tilt_link, topic: /tilt_scan, data_type: LaserScan, expected_update_rate: 0.2,
+             observation_persistence: 0.2, marking: false, clearing: true, min_obstacle_height: 0.02, max_obstacle_height: 2.0}
+
+ground_object_cloud: {sensor_frame: laser_tilt_link, topic: /ground_object_cloud, data_type: PointCloud, expected_update_rate: 0.2,
+                       observation_persistence: 4.6, marking: true, clearing: false, min_obstacle_height: -0.10, max_obstacle_height: 2.0}
+
+stereo_cloud: {sensor_frame: narrow_stereo_optical_frame, topic: /narrow_stereo_textured/points_filtered2, data_type: PointCloud2, expected_update_rate: 0.2,
+                       observation_persistence: 4.6, marking: true, clearing: false, min_obstacle_height: -0.10, max_obstacle_height: 2.0}
+
+occupied_octomap: {sensor_frame: odom_combined, topic: /octomap_point_cloud_centers, data_type: PointCloud2, expected_update_rate: 1.0,
+                       observation_persistence: 0.0, marking: true, clearing: false, min_obstacle_height: 0.0, max_obstacle_height: 2.0}

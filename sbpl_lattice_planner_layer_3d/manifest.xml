@@ -1,0 +1,32 @@
+<package>
+  <description brief="sbpl_lattice_planner_3d - an extended sbpl_lattice_planner which performs collision checks in 3D">
+
+     This package provides an extended sbpl_lattice_planner to perform 3D collision checks against the robot's full kinematic configuration. It should serve as a drop-in replacement as global planner in the navigation stack, to be used with pose_follower_3d as local planner. The 3D collision map is usually sent out from octomap_server. 
+
+  </description>
+  <author>Michael Phillips, Armin Hornung</author>
+  <license>BSD</license>
+  <review status="unreviewed" notes=""/>
+  <url>http://ros.org/wiki/sbpl_lattice_planner_3d</url>
+  <depend package="roscpp"/>
+  <depend package="sbpl"/>
+  <depend package="costmap_2d"/>
+  <depend package="nav_core"/>
+  <depend package="pluginlib"/>
+  <depend package="geometry_msgs"/>
+  <depend package="nav_msgs"/>
+  <depend package="sbpl_lattice_planner"/>
+  <depend package="octomap_server"/>
+  <depend package="planning_models" />
+  <depend package="planning_environment" />
+  <depend package="pose_follower" />
+  <depend package="opencv2" />
+
+  <export>
+    <cpp cflags="-I${prefix}/include" lflags="-Wl,-rpath,${prefix}/lib -L${prefix}/lib -lsbpl_lattice_planner_layer_3d"/>
+    <nav_core plugin="${prefix}/bgp_plugin.xml" />
+  </export>
+
+</package>
+
+

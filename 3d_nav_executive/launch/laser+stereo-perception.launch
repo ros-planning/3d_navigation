@@ -1,0 +1,30 @@
+<launch>
+
+  <include file="$(find pr2_machine)/$(env ROBOT).machine" />
+
+  <node name="change_narrow_stereo_params_speckle" pkg="dynamic_reconfigure" type="dynparam"
+    args="set /narrow_stereo_textured/narrow_stereo_textured_proc speckle_size 1000" />
+    
+  <node name="toggle_projector_on" pkg="dynamic_reconfigure" type="dynparam"
+    args="set camera_synchronizer_node narrow_stereo_trig_mode 3" />
+  
+  <!-- send additional description parameters -->
+  <include file="$(find pr2_arm_navigation_config)/launch/pr2_planning_environment.launch" />
+
+  <!-- self filter stereo points -->
+  <node  machine="c2" pkg="robot_self_filter" type="self_filter" respawn="true" name="stereo_self_filter" output="screen">
+     <remap from="cloud_in" to="/narrow_stereo_textured/points2" />
+     <remap from="cloud_out" to="/narrow_stereo_textured/points_filtered2" />
+     
+     <param name="subsample_value" type="double" value=".02"/>
+     <rosparam command="load" file="$(find pr2_arm_navigation_perception)/config/self_filter.yaml" />
+  </node>
+
+<node pkg="planning_environment" type="filter_attached_objects" name="filter_attached_objects_stereo" output="screen">
+    <remap from="cloud_in" to="/narrow_stereo_textured/points_filtered2" />
+    <remap from="cloud_out" to="/narrow_stereo_textured/points_filtered_attached2" />
+    <param name="sensor_frame" type="string" value="narrow_stereo_optical_frame" />
+  </node>
+
+     
+</launch>

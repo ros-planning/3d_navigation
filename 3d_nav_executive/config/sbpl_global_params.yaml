@@ -1,0 +1,27 @@
+# Global planner params:
+SBPLLatticePlannerLayer3D:
+  environment_type: XYThetaLattice
+  planner_type: ARAPlanner
+  allocated_time: 300.0
+  initial_epsilon: 10.0
+  forward_search: false
+
+
+# move_base params:
+
+footprint_padding: 0.01
+controller_frequency: 10 # was 15
+controller_patience: 100.0
+base_global_planner: SBPLLatticePlannerLayer3D
+base_local_planner: pose_follower_3d/PoseFollower3D
+recovery_behaviors:
+  - name: 'conservative_reset'
+    type: 'clear_costmap_recovery/ClearCostmapRecovery'
+  - name: 'aggressive_reset'
+    type: 'clear_costmap_recovery/ClearCostmapRecovery'
+
+conservative_reset:
+  reset_distance: 3.0
+
+aggressive_reset:
+  reset_distance: 1.84

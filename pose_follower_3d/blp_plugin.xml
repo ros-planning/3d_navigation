@@ -1,0 +1,7 @@
+<library path="lib/libpose_follower_3d">
+  <class name="pose_follower_3d/PoseFollower3D" type="pose_follower_3d::PoseFollower3D" base_class_type="nav_core::BaseLocalPlanner">
+    <description>
+      A implementation of a local planner that attempts to follow a plan as closely as possible.
+    </description>
+  </class>
+</library>

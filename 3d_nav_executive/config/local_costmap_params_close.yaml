@@ -1,0 +1,13 @@
+local_costmap:
+  publish_voxel_map: true
+  global_frame: map
+  robot_base_frame: base_link
+  update_frequency: 2.0
+  publish_frequency: 0.5
+  static_map: true
+  rolling_window: true
+  width: 4.0
+  height: 4.0
+  resolution: 0.025
+  origin_x: 0.0
+  origin_y: 0.0

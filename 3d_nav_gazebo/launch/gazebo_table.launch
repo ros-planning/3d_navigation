@@ -1,0 +1,32 @@
+<launch>
+  <!--
+  <include file="$(find pr2_gazebo)/pr2_empty_world.launch"/>
+  -->
+
+  <include file="$(find gazebo_worlds)/launch/wg_world.launch"/>
+  <include file="$(find pr2_gazebo)/pr2.launch"/>
+
+  <include file="$(find 3d_nav_gazebo)/launch/long_table.launch"/>
+
+  <!--
+  <node pkg="pr2_tuck_arms_action" type="tuck_arms.py" name="tuck_arms_action" output="screen">
+        <param name="controller_name" type="string" value="arm_controller"/>
+  </node>
+  -->
+
+  <param name="/use_sim_time" value="true"/>
+
+  <node name="fake_localization" pkg="fake_localization" type="fake_localization" respawn="false">
+  	<param name="odom_frame_id" value="odom_combined" />
+    <param name="delta_x" value="28.0"/>
+    <param name="delta_y" value="26.0"/>
+  </node>
+
+  <node name="change_narrow_stereo_params_speckle" pkg="dynamic_reconfigure" type="dynparam"
+    args="set /narrow_stereo/narrow_stereo_proc speckle_size 1000" />
+    
+  <node name="toggle_projector_on" pkg="dynamic_reconfigure" type="dynparam"
+    args="set camera_synchronizer_node narrow_stereo_trig_mode 3" />
+
+</launch>
+

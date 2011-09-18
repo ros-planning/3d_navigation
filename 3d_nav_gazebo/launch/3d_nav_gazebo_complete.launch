@@ -1,0 +1,8 @@
+<launch>
+  <include file="$(find 3d_nav_gazebo)/launch/gazebo_wg.launch"/>
+
+  <include file="$(find 3d_nav_gazebo)/launch/3d_nav_environment_sim.launch"/>
+
+  <include file="$(find 3d_nav_executive)/launch/move_base_sbpl_3d.launch"/>
+
+</launch>

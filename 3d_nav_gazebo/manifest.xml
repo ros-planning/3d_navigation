@@ -1,0 +1,22 @@
+<package>
+  <description brief="3d_nav_gazebo - Simulation package for 3d_navigation">
+
+     This package provides the launch files and configuration to run 3d_navigation in gazebo.
+
+  </description>
+  <author>Armin Hornung</author>
+  <license>BSD</license>
+  <review status="unreviewed" notes=""/>
+  <url>http://ros.org/wiki/3d_nav_gazebo</url>
+  <depend package="gazebo" />
+  <depend package="pr2_gazebo" />
+  <depend package="pr2_arm_navigation_config" />
+  <depend package="fake_localization" />
+  <depend package="dynamic_reconfigure" />
+  <depend package="planning_environment" />
+  <depend package="octomap_server" />
+  <depend package="3d_nav_executive" />
+
+</package>
+
+

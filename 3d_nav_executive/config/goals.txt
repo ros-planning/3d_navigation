@@ -1,0 +1,2 @@
+pickup_table -3.820 1.304 -0.369
+putdown_table 2.035 -0.531 -0.373

@@ -1,0 +1,26 @@
+<package>
+  <description brief="octomap_collision_check">
+
+     Experimental package for octomap collision checks. Not used by anything at the moment.
+
+  </description>
+  <author>Armin Hornung</author>
+  <license>BSD</license>
+  <review status="unreviewed" notes=""/>
+  <url>http://ros.org/wiki/octomap_collision_check</url>
+  <depend package="octomap"/>
+  <depend package="octomap_ros"/>
+  <depend package="roscpp" />
+  <depend package="pcl"/>
+  <depend package="visualization_msgs" />
+  <depend package ="mapping_msgs" />
+  <depend package ="planning_environment" />
+  <depend package ="planning_models" />
+  
+  <export>
+    <cpp cflags="-I${prefix}/include" lflags="-Wl,-rpath,${prefix}/lib -L${prefix}/lib -loctomap_collision_check"/>
+  </export>
+
+</package>
+
+

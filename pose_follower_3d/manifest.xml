@@ -1,0 +1,31 @@
+<package>
+  <description brief="pose_follower_3d - an extended pose_follower local planner which performs collision checks in 3D">
+
+      This package provides an extended pose_follwer to perform 3D collision checks against the robot's full kinematic configuration. It should serve as a drop-in replacement as local planner in the navigation stack, to be used with global plans from sbpl_lattice_planner_3d. The 3D collision map is usually sent out from octomap_server. 
+
+  </description>
+  <author>Eitan Marder-Eppstein, Armin Hornung</author>
+  <license>BSD</license>
+  <review status="unreviewed" notes=""/>
+  <url>http://ros.org/wiki/pose_follower_3d</url>
+  <depend package="nav_core"/>
+  <depend package="base_local_planner"/>
+  <depend package="costmap_2d"/>
+  <depend package="roscpp"/>
+  <depend package="tf"/>
+  <depend package="nav_msgs"/>
+  <depend package="pluginlib"/>
+  <depend package="octomap_server"/>
+  <depend package="planning_models" />
+  <depend package="planning_environment" />
+  <depend package="planning_environment_msgs" />
+  <depend package="mapping_msgs" />
+
+  <export>
+    <cpp cflags="-I${prefix}/include" lflags="-Wl,-rpath,${prefix}/lib -L${prefix}/lib -lpose_follower_3d" />
+    <nav_core plugin="${prefix}/blp_plugin.xml" />
+  </export>
+
+</package>
+
+

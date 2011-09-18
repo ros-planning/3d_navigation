@@ -1,0 +1,5 @@
+<launch>
+  <!-- push table_description to factory and spawn robot in gazebo -->
+  <node name="spawn_table" pkg="gazebo" type="spawn_model" args="-file $(find 3d_nav_gazebo)/objects/long_table.model -gazebo -model long_table -x 3.5" respawn="false" output="screen" />
+</launch>
+

@@ -1,0 +1,8 @@
+<library path="lib/libsbpl_lattice_planner_layer_3d">
+  <class name="SBPLLatticePlannerLayer3D" type="sbpl_lattice_planner_layer_3d::SBPLLatticePlannerLayer3D" base_class_type="nav_core::BaseGlobalPlanner">
+    <description>
+      An implmentation of a search-based planning using anytime a* and a lattice graph
+    </description>
+  </class>
+</library>
+

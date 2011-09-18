@@ -1,0 +1,10 @@
+arm_costmap: 
+  global_frame: map
+  robot_base_frame: base_link
+  update_frequency: 2.0
+  publish_frequency: 0.0
+  static_map: true
+  rolling_window: false
+#footprint: [[-0.325, -0.325], [-0.325, 0.325], [0.7, 0.35], [0.7, 0.0], [0.7, -0.35]]
+  footprint: [[-0.325, 0.325], [0.05,1.00], [0.2,1.00], [0.325, 0.325], [0.325, -0.325], [-0.1, -1.00], [-0.25, -1.00], [-0.325, -0.325]]
+  map_topic: arm_map

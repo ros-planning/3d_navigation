@@ -1,0 +1,7 @@
+<launch>
+  <node  name="demo_3d_nav" pkg="3d_nav_executive" type="experiment_script1" output="screen" > 
+    <param name="arm_positions_filename" value="$(find 3d_nav_executive)/config/arm_poses.txt" />
+    <param name="goal_positions_filename" value="$(find 3d_nav_executive)/config/experiment_goals.txt" />
+  </node>
+
+</launch>

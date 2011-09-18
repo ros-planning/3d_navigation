@@ -1,0 +1,31 @@
+<launch>
+  <include file="$(find pr2_machine)/$(env ROBOT).machine" />
+  <node ns="local_costmap" name="voxel_grid_throttle" pkg="topic_tools" type="throttle" args="messages voxel_grid 3.0 voxel_grid_throttled" />
+
+ <node  machine="c1" pkg="move_base" type="move_base" respawn="false" name="move_base_node" output="screen">
+    <remap from="odom" to="base_odometry/odom" />
+    <remap from="cmd_vel" to="base_controller/command" />
+  
+    <rosparam file="$(find 3d_nav_executive)/config/sbpl_global_params.yaml" command="load" />
+    <!-- <param name="SBPLLatticePlannerLayer3D/primitive_filename" value="$(find sbpl_lattice_planner_layer_3d)/pr2sides.mprim" /> -->
+    <param name="SBPLLatticePlannerLayer3D/primitive_filename" value="$(find sbpl_lattice_planner_layer_3d)/3dnav.mprim" />
+    
+    <rosparam file="$(find 3d_nav_executive)/config/pr2_footprint_links.yaml" command="load" ns="SBPLLatticePlannerLayer3D" />
+
+
+    <rosparam file="$(find 3d_nav_executive)/config/costmap_common_params.yaml" command="load" ns="global_costmap" />
+    <rosparam file="$(find 3d_nav_executive)/config/costmap_common_params.yaml" command="load" ns="local_costmap" />
+    <rosparam file="$(find 3d_nav_executive)/config/costmap_common_params.yaml" command="load" ns="base_costmap" />
+    <rosparam file="$(find 3d_nav_executive)/config/costmap_common_params.yaml" command="load" ns="spine_costmap" />
+    <rosparam file="$(find 3d_nav_executive)/config/costmap_common_params.yaml" command="load" ns="arm_costmap" />
+    <rosparam file="$(find 3d_nav_executive)/config/local_costmap_params_close.yaml" command="load" />
+    <rosparam file="$(find 3d_nav_executive)/config/global_costmap_params.yaml" command="load" />
+    <rosparam file="$(find 3d_nav_executive)/config/base_costmap_params.yaml" command="load" />
+    <rosparam file="$(find 3d_nav_executive)/config/spine_costmap_params.yaml" command="load" />
+    <rosparam file="$(find 3d_nav_executive)/config/arm_costmap_params.yaml" command="load" />
+    <rosparam file="$(find 3d_nav_executive)/config/base_local_planner_trajectory.yaml" command="load" /> 
+    <rosparam file="$(find 3d_nav_executive)/config/base_local_planner_poses.yaml" command="load" />
+  </node>
+  
+  <node pkg="3d_nav_executive" type="point_head_driving.py" name="point_head_driving" />
+</launch>
