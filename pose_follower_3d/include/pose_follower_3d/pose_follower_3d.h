@@ -46,13 +46,10 @@
 #include <geometry_msgs/PoseStamped.h>
 #include <geometry_msgs/Twist.h>
 #include <nav_msgs/Odometry.h>
-#include <mapping_msgs/CollisionObject.h>
+#include <moveit_msgs/CollisionObject.h>
 #include <base_local_planner/trajectory_planner_ros.h>
-#include <planning_environment/models/collision_models.h>
-#include <planning_models/kinematic_state.h>
-#include <planning_environment_msgs/GetRobotState.h>
-#include <planning_environment/models/model_utils.h>
-
+#include <moveit/planning_scene_monitor/planning_scene_monitor.h>
+#include <moveit/collision_detection/collision_matrix.h>
 
 namespace pose_follower_3d
 {
@@ -81,18 +78,13 @@ private:
                            std::vector<geometry_msgs::PoseStamped>& transformed_plan);
 
   void odomCallback(const nav_msgs::Odometry::ConstPtr& msg);
-  void collisionsCallback(const mapping_msgs::CollisionObjectConstPtr& msg);
-  void attachedCallback(const mapping_msgs::AttachedCollisionObjectConstPtr& msg);
+  void sceneUpdateCallback( planning_scene_monitor::PlanningSceneMonitor::SceneUpdateType scene_update_type );
+//  void attachedCallback(const mapping_msgs::AttachedCollisionObjectConstPtr& msg);
   bool stopped();
   void updateRobotPosition(double x, double y, double theta);
   bool checkTrajectory3D(double x, double y, double theta, double vx, double vy, double vtheta);
 
-  /// Check for 3D collision of the robot's kinematic state.
-  /// x,y,theta are in continuous costmap coords, will be transformed
-  /// into the 3D coll. map coords.
-  bool isIn3DCollision(double x, double y, double theta);
-
-  tf::TransformListener* tf_;
+  boost::shared_ptr<tf::TransformListener> tf_;
   costmap_2d::Costmap2DROS* costmap_ros_;
   ros::Publisher vel_pub_;
   double K_trans_, K_rot_, tolerance_trans_, tolerance_rot_;
@@ -104,18 +96,17 @@ private:
   bool holonomic_;
   boost::mutex odom_lock_, collisions_lock_, attached_lock_;
   ros::Subscriber odom_sub_, collisions_sub_;
-  ros::ServiceClient robot_state_client_;
+/////  ros::ServiceClient robot_state_client_;
   nav_msgs::Odometry base_odom_;
   double trans_stopped_velocity_, rot_stopped_velocity_;
   ros::Time goal_reached_time_;
   unsigned int current_waypoint_; 
   std::vector<geometry_msgs::PoseStamped> global_plan_;
-  base_local_planner::TrajectoryPlannerROS collision_planner_;
-  planning_environment::CollisionModels collision_model_3d_;
-  planning_models::KinematicState* kinematic_state_;
+  base_local_planner::TrajectoryPlannerROS two_d_planner_;
+  planning_scene_monitor::PlanningSceneMonitorPtr planning_scene_monitor_;
+  collision_detection::AllowedCollisionMatrix allowed_collision_matrix_;
   int samples_;
   bool collisions_received_;
-//      mapping_msgs::CollisionObject collision_object_;
   ros::Time collision_object_time_;
 };
 

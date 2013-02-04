@@ -1,4 +1,9 @@
 #Independent settings for the planner's costmap
+#
+# This costmap is not used currently, it is ignored by
+# sbpl_lattice_planner_3d.cpp unless someone calls
+# useMultiLayer( false ).  (But they don't, they call it with true.)
+#
 global_costmap: 
   global_frame: map
   robot_base_frame: base_link

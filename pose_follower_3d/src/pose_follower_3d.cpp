@@ -42,24 +42,63 @@ PLUGINLIB_DECLARE_CLASS(pose_follower_3d, PoseFollower3D, pose_follower_3d::Pose
 namespace pose_follower_3d
 {
 
-PoseFollower3D::PoseFollower3D(): tf_(NULL),
-                                  costmap_ros_(NULL),
-                                  collision_model_3d_("robot_description"),
-                                  kinematic_state_(NULL),
+PoseFollower3D::PoseFollower3D(): costmap_ros_(NULL),
                                   collisions_received_(false)
 {}
 
+struct NullDeleter
+{
+  void operator()(void const *) const {}
+};
+
 void PoseFollower3D::initialize(std::string name, tf::TransformListener* tf, costmap_2d::Costmap2DROS* costmap_ros)
 {
-  tf_ = tf;
+  // PlanningSceneMonitor needs a shared_ptr to a tf Transformer, but
+  // we have a bare pointer from the MoveBase API.  Here we initialize
+  // our shared_ptr with an empty deleter so it doesn't trash move_base's
+  // TransformListener when it goes out of scope.
+  tf_.reset( tf, NullDeleter() );
+
   costmap_ros_ = costmap_ros;
   ROS_INFO("Local planner name: %s", name.c_str());
+
+  // Make a new PlanningSceneMonitor and bail if it is not
+  // configured.  I don't know yet what would make the configuration
+  // of it fail, probably this could be made to handle failure more
+  // gracefully.
+  planning_scene_monitor_.reset( new planning_scene_monitor::PlanningSceneMonitor( "robot_description", tf_ ));
+  if( !planning_scene_monitor_->getPlanningScene() ||
+      !planning_scene_monitor_->getPlanningScene()->isConfigured() )
+  {
+    ROS_FATAL( "Planning scene not configured, failing." );
+    planning_scene_monitor_.reset();
+    return;
+  }
+
+  planning_scene_monitor_->addUpdateCallback( boost::bind( &PoseFollower3D::sceneUpdateCallback, this, _1 ));
+  planning_scene_monitor_->startWorldGeometryMonitor();
+  planning_scene_monitor_->startSceneMonitor();
+  planning_scene_monitor_->startStateMonitor();
+ 
+  allowed_collision_matrix_ = planning_scene_monitor_->getPlanningScene()->getAllowedCollisionMatrix();
+  allowed_collision_matrix_.setEntry( "fl_caster_l_wheel_link", true );
+  allowed_collision_matrix_.setEntry( "fl_caster_r_wheel_link", true );
+  allowed_collision_matrix_.setEntry( "fl_caster_rotation_link", true );
+  allowed_collision_matrix_.setEntry( "bl_caster_l_wheel_link", true );
+  allowed_collision_matrix_.setEntry( "bl_caster_r_wheel_link", true );
+  allowed_collision_matrix_.setEntry( "bl_caster_rotation_link", true );
+  allowed_collision_matrix_.setEntry( "fr_caster_l_wheel_link", true );
+  allowed_collision_matrix_.setEntry( "fr_caster_r_wheel_link", true );
+  allowed_collision_matrix_.setEntry( "fr_caster_rotation_link", true );
+  allowed_collision_matrix_.setEntry( "br_caster_l_wheel_link", true );
+  allowed_collision_matrix_.setEntry( "br_caster_r_wheel_link", true );
+  allowed_collision_matrix_.setEntry( "br_caster_rotation_link", true );
+
   current_waypoint_ = 0;
   goal_reached_time_ = ros::Time::now();
   ros::NodeHandle node_private("~/" + name);
 
-  kinematic_state_ = new planning_models::KinematicState(collision_model_3d_.getKinematicModel());
-  collision_planner_.initialize(name, tf_, costmap_ros_);
+  two_d_planner_.initialize(name, tf_.get(), costmap_ros_);
 
   node_private.param("k_trans", K_trans_, 1.5);
   node_private.param("k_rot", K_rot_, 1.25);
@@ -87,10 +126,10 @@ void PoseFollower3D::initialize(std::string name, tf::TransformListener* tf, cos
 
   ros::NodeHandle node;
   odom_sub_ = node.subscribe<nav_msgs::Odometry>("odom", 1, boost::bind(&PoseFollower3D::odomCallback, this, _1));
-  collisions_sub_ = node.subscribe<mapping_msgs::CollisionObject>("octomap_collision_object", 1,
-                                                                  boost::bind(&PoseFollower3D::collisionsCallback, this, _1));
+/////  collisions_sub_ = node.subscribe<mapping_msgs::CollisionObject>("octomap_collision_object", 1,
+/////                                                                  boost::bind(&PoseFollower3D::collisionsCallback, this, _1));
   vel_pub_ = node.advertise<geometry_msgs::Twist>("cmd_vel", 10);
-  robot_state_client_ = node.serviceClient<planning_environment_msgs::GetRobotState>("/environment_server/get_robot_state");
+/////  robot_state_client_ = node.serviceClient<planning_environment_msgs::GetRobotState>("/environment_server/get_robot_state");
 
   ROS_DEBUG("Initialized");
 }
@@ -106,53 +145,61 @@ void PoseFollower3D::odomCallback(const nav_msgs::Odometry::ConstPtr& msg)
             base_odom_.twist.twist.linear.x, base_odom_.twist.twist.linear.y, base_odom_.twist.twist.angular.z);
 }
 
-void PoseFollower3D::attachedCallback(const mapping_msgs::AttachedCollisionObjectConstPtr& msg)
+///// void PoseFollower3D::attachedCallback(const mapping_msgs::AttachedCollisionObjectConstPtr& msg)
+///// {
+/////  ROS_DEBUG("AttachedCollisionObjects received");
+/////  boost::mutex::scoped_lock lock(collisions_lock_);
+/////
+/////  // kinematic state needs to be freed because of mutex lock
+/////  if( kinematic_state_ )
+/////  {
+/////    delete kinematic_state_;
+/////    kinematic_state_ = NULL;
+/////  }
+/////  collision_model_3d_.addAttachedObject(*msg);
+/////  kinematic_state_ = new planning_models::KinematicState(collision_model_3d_.getKinematicModel());
+///// }
+
+// void PoseFollower3D::collisionsCallback(const mapping_msgs::CollisionObjectConstPtr& msg)
+// {
+//   ROS_DEBUG("CollisionObject in PoseFollower3D received, storing locally");
+// 
+//   if(msg->header.frame_id != costmap_ros_->getGlobalFrameID()){
+//     //ROS_WARN("poser_follower_3d: Collision map and costmap in different frames (%s / %s)", msg->header.frame_id.c_str(), costmap_ros_->getGlobalFrameID().c_str());
+//   }
+//   boost::mutex::scoped_lock lock(collisions_lock_);
+//   // TODO: only copy here, addStaticObject later?
+//   //collision_object_ = *msg;
+// 
+//   collision_model_3d_.addStaticObject(*msg);
+// 
+// ///// The following is now done in initialize().
+// //
+// //  // ignore collisions by the wheels:
+// //  collision_space::EnvironmentModel::AllowedCollisionMatrix acm = collision_model_3d_.getCurrentAllowedCollisionMatrix();
+// //  acm.changeEntry("fl_caster_l_wheel_link", true);
+// //  acm.changeEntry("fl_caster_r_wheel_link", true);
+// //  acm.changeEntry("fl_caster_rotation_link", true);
+// //  acm.changeEntry("bl_caster_l_wheel_link", true);
+// //  acm.changeEntry("bl_caster_r_wheel_link", true);
+// //  acm.changeEntry("bl_caster_rotation_link", true);
+// //  acm.changeEntry("fr_caster_l_wheel_link", true);
+// //  acm.changeEntry("fr_caster_r_wheel_link", true);
+// //  acm.changeEntry("fr_caster_rotation_link", true);
+// //  acm.changeEntry("br_caster_l_wheel_link", true);
+// //  acm.changeEntry("br_caster_r_wheel_link", true);
+// //  acm.changeEntry("br_caster_rotation_link", true);
+// //
+// //  collision_model_3d_.setAlteredAllowedCollisionMatrix(acm);
+// 
+//   collisions_received_ = true;
+//   collision_object_time_ = msg->header.stamp;
+// }
+
+void PoseFollower3D::sceneUpdateCallback( planning_scene_monitor::PlanningSceneMonitor::SceneUpdateType )
 {
-  ROS_DEBUG("AttachedCollisionObjects received");
-  boost::mutex::scoped_lock lock(collisions_lock_);
-
-  // kinematic state needs to be freed because of mutex lock
-  if( kinematic_state_ )
-  {
-    delete kinematic_state_;
-    kinematic_state_ = NULL;
-  }
-  collision_model_3d_.addAttachedObject(*msg);
-  kinematic_state_ = new planning_models::KinematicState(collision_model_3d_.getKinematicModel());
-}
-
-void PoseFollower3D::collisionsCallback(const mapping_msgs::CollisionObjectConstPtr& msg)
-{
-  ROS_DEBUG("CollisionObject in PoseFollower3D received, storing locally");
-
-  if(msg->header.frame_id != costmap_ros_->getGlobalFrameID()){
-    //ROS_WARN("poser_follower_3d: Collision map and costmap in different frames (%s / %s)", msg->header.frame_id.c_str(), costmap_ros_->getGlobalFrameID().c_str());
-  }
-  boost::mutex::scoped_lock lock(collisions_lock_);
-  // TODO: only copy here, addStaticObject later?
-  //collision_object_ = *msg;
-
-  collision_model_3d_.addStaticObject(*msg);
-
-  // ignore collisions by the wheels:
-  collision_space::EnvironmentModel::AllowedCollisionMatrix acm = collision_model_3d_.getCurrentAllowedCollisionMatrix();
-  acm.changeEntry("fl_caster_l_wheel_link", true);
-  acm.changeEntry("fl_caster_r_wheel_link", true);
-  acm.changeEntry("fl_caster_rotation_link", true);
-  acm.changeEntry("bl_caster_l_wheel_link", true);
-  acm.changeEntry("bl_caster_r_wheel_link", true);
-  acm.changeEntry("bl_caster_rotation_link", true);
-  acm.changeEntry("fr_caster_l_wheel_link", true);
-  acm.changeEntry("fr_caster_r_wheel_link", true);
-  acm.changeEntry("fr_caster_rotation_link", true);
-  acm.changeEntry("br_caster_l_wheel_link", true);
-  acm.changeEntry("br_caster_r_wheel_link", true);
-  acm.changeEntry("br_caster_rotation_link", true);
-
-  collision_model_3d_.setAlteredAllowedCollisionMatrix(acm);
-
   collisions_received_ = true;
-  collision_object_time_ = msg->header.stamp;
+  ROS_ERROR( "PoseFollower3D::sceneUpdateCallback()." );
 }
 
 double PoseFollower3D::headingDiff(double x, double y, double pt_x, double pt_y, double heading)
@@ -171,8 +218,15 @@ double PoseFollower3D::headingDiff(double x, double y, double pt_x, double pt_y,
   return -1.0 * vector_angle;
 }
 
+/// 3D collision check of trajectory, starting at x,y,theta in global map coordinates.
 bool PoseFollower3D::checkTrajectory3D(double x, double y, double theta, double vx, double vy, double vtheta)
 {
+  if( !collisions_received_ )
+  {
+    ROS_ERROR("pose_follower_3d did not receive any planning scene updates, no 3D collision check possible." );
+    return false;
+  }
+
   int num_steps = int(sim_time_ / sim_granularity_ + 0.5);
   //we at least want to take one step... even if we won't move, we want to score our current position
   if(num_steps == 0)
@@ -180,40 +234,34 @@ bool PoseFollower3D::checkTrajectory3D(double x, double y, double theta, double 
     num_steps = 1;
   }
 
+  // Lock the planning scene so that no changes happen while we are checking this trajectory.
+  planning_scene_monitor::LockedPlanningSceneRO read_only_scene( planning_scene_monitor_ );
+  kinematic_state::KinematicState current_state( read_only_scene->getCurrentState() );
+  std::map<std::string, double> joint_update;
+
   for(int i = 0; i <= num_steps; ++i)
   {
     double dt = sim_time_ / num_steps * i;
+    // This must be a bug... as far as I can tell this does not trace an arc, it traces a straight line. -hersh
     double x_i = x + (vx * cos(theta) + vy * cos(M_PI_2 + theta)) * dt;
     double y_i = y + (vx * sin(theta) + vy * sin(M_PI_2 + theta)) * dt;
     double theta_i = theta + vtheta * dt;
 
-    if (isIn3DCollision(x_i, y_i, theta_i))
+    joint_update["world_joint/x"] = x_i;
+    joint_update["world_joint/y"] = y_i;
+    joint_update["world_joint/theta"] = theta_i;
+    current_state.setStateValues( joint_update );
+
+    collision_detection::CollisionRequest collision_request;
+    collision_detection::CollisionResult collision_result;
+    read_only_scene->checkCollision( collision_request, collision_result, current_state, allowed_collision_matrix_ );
+    if( collision_result.collision )
     {
       return false;
     }
   }
 
   return true;
-}
-
-/// 3D collision check at x,y,theta in global map coordinates
-bool PoseFollower3D::isIn3DCollision(double x, double y, double theta)
-{
-  ROS_DEBUG("PoseFollower3D: 3D collision check at %f %f %f", x, y, theta);
-  if (!collisions_received_){
-    ROS_ERROR("pose_follower_3d did not receive any 3D CollisionObject, no 3D collision check possible");
-    return true;
-  }
-  //m_num3DCollChecks++;
-
-  // move robot to planned base configuration:
-  btTransform cur(tf::createQuaternionFromYaw(theta), btVector3(x, y, 0.0));
-  kinematic_state_->getJointStateVector()[0]->setJointStateValues(cur);
-  kinematic_state_->updateKinematicLinks();
-
-  // this is the collision check:
-  boost::mutex::scoped_lock lock(collisions_lock_);
-  return collision_model_3d_.isKinematicStateInEnvironmentCollision(*kinematic_state_);
 }
 
 bool PoseFollower3D::stopped()
@@ -260,7 +308,7 @@ bool PoseFollower3D::computeVelocityCommands(geometry_msgs::Twist& cmd_vel)
   geometry_msgs::Twist test_vel = limit_vel;
   // TODO: fix footprint: update costmap one / own collcheck here?
   double s = 1.2;
-  bool legal_traj = collision_planner_.checkTrajectory(s*test_vel.linear.x, s*test_vel.linear.y, s*test_vel.angular.z, true);
+  bool legal_traj = two_d_planner_.checkTrajectory(s*test_vel.linear.x, s*test_vel.linear.y, s*test_vel.angular.z, true);
 
   double collision_age = (ros::Time::now() - collision_object_time_).toSec();
   if (collision_age > 1.5)
@@ -307,7 +355,7 @@ bool PoseFollower3D::computeVelocityCommands(geometry_msgs::Twist& cmd_vel)
   {
     ROS_WARN("scaling down velocity on collision check...");
     s = 1.0;
-    legal_traj = collision_planner_.checkTrajectory(s*test_vel.linear.x, s*test_vel.linear.y, s*test_vel.angular.z, true);
+    legal_traj = two_d_planner_.checkTrajectory(s*test_vel.linear.x, s*test_vel.linear.y, s*test_vel.angular.z, true);
     if( !legal_traj )
     {
       legal_traj = checkTrajectory3D( robot_pose.getOrigin().x(),
@@ -374,24 +422,33 @@ bool PoseFollower3D::setPlan(const std::vector<geometry_msgs::PoseStamped>& glob
     return false;
   }
 
-  // update kinematic state of robot:
-  planning_environment_msgs::GetRobotStateRequest req;
-  planning_environment_msgs::GetRobotStateResponse resp;
-  if (robot_state_client_.call(req, resp))
-  {
-    if (!planning_environment::setRobotStateAndComputeTransforms(resp.robot_state, *kinematic_state_))
-    {
-      ROS_WARN("Robot State to kinematic model update incomplete");
-    } else{
-      ROS_INFO("Kinematic model updated from robot state");
-    }
-  }
-  else
-  {
-    ROS_ERROR("Error calling robot state service");
-    return false;
-  }
-  collision_planner_.updateFootprint();
+/////  // update kinematic state of robot:
+/////  planning_environment_msgs::GetRobotStateRequest req;
+/////  planning_environment_msgs::GetRobotStateResponse resp;
+/////  if (robot_state_client_.call(req, resp))
+/////  {
+/////    if (!planning_environment::setRobotStateAndComputeTransforms(resp.robot_state, *kinematic_state_))
+/////    {
+/////      ROS_WARN("Robot State to kinematic model update incomplete");
+/////    } else{
+/////      ROS_INFO("Kinematic model updated from robot state");
+/////    }
+/////  }
+/////  else
+/////  {
+/////    ROS_ERROR("Error calling robot state service");
+/////    return false;
+/////  }
+
+  // two_d_planner_'s costmap is costmap_ros_, which
+  // SBPLLatticePlannerLayer3D has a pointer to (there called
+  // controller_costmap_).  The connection is hacked into
+  // move_base.cpp via a second call to planner_->initialize().
+  //
+  // This updateFootprint() call makes sure that the two_d_planner_
+  // has the same footprint as controller_costmap_.  That costmap has
+  // the automatically-generated full-body footprint.
+  two_d_planner_.updateFootprint();
 
   return true;
 }

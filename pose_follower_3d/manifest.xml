@@ -16,11 +16,15 @@
   <depend package="nav_msgs"/>
   <depend package="pluginlib"/>
   <depend package="octomap_server"/>
+<!--
   <depend package="planning_models" />
   <depend package="planning_environment" />
-  <depend package="planning_environment_msgs" />
   <depend package="mapping_msgs" />
-
+-->
+  <depend package="moveit_msgs" />
+<!-- I presume I'll need...
+  <depend package="moveit_core" />
+-->
   <export>
     <cpp cflags="-I${prefix}/include" lflags="-Wl,-rpath,${prefix}/lib -L${prefix}/lib -lpose_follower_3d" />
     <nav_core plugin="${prefix}/blp_plugin.xml" />
