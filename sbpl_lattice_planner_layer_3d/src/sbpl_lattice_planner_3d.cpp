@@ -39,7 +39,6 @@
 #include <pluginlib/class_list_macros.h>
 #include <nav_msgs/Path.h>
 #include <sbpl_lattice_planner_layer_3d/SBPLLatticePlanner3DStats.h>
-#include <planning_environment_msgs/GetRobotState.h>
 
 using namespace std;
 using namespace ros;
@@ -75,12 +74,16 @@ class LatticeSCQ : public StateChangeQuery{
     mutable std::vector<int> succsOfChangedCells_;
 };
 
+SBPLLatticePlannerLayer3D* SBPLLatticePlannerLayer3D::instance_ = NULL;
+
 SBPLLatticePlannerLayer3D::SBPLLatticePlannerLayer3D()
-  : initialized_(false), costmap_ros_(NULL), controller_costmap_(NULL), controller_costmap_initialized(false){
+  : initialized_(false), costmap_ros_(NULL), controller_costmap_(NULL), footprint_computed_(false){
+  instance_ = this;
 }
 
 SBPLLatticePlannerLayer3D::SBPLLatticePlannerLayer3D(std::string name, costmap_2d::Costmap2DROS* costmap_ros) 
-  : initialized_(false), costmap_ros_(NULL), controller_costmap_(NULL), controller_costmap_initialized(false){
+  : initialized_(false), costmap_ros_(NULL), controller_costmap_(NULL), footprint_computed_(false){
+  instance_ = this;
   initialize(name, costmap_ros);
 }
 
@@ -91,10 +94,6 @@ SBPLLatticePlannerLayer3D::~SBPLLatticePlannerLayer3D(){
 }
     
 void SBPLLatticePlannerLayer3D::initialize(std::string name, costmap_2d::Costmap2DROS* costmap_ros){
-  if(name.compare("") == 0){
-    controller_costmap_ = costmap_ros;
-    return;
-  }
   if(!initialized_){
     ros::NodeHandle private_nh("~/"+name);
     ros::NodeHandle nh;
@@ -169,10 +168,26 @@ void SBPLLatticePlannerLayer3D::initialize(std::string name, costmap_2d::Costmap
     //arm_costmap_ros_->clearRobotFootprint();
     base_costmap_ros_->getCostmapCopy(cost_map_);
 
+    planning_scene_monitor_.reset( new planning_scene_monitor::PlanningSceneMonitor( "robot_description", tf_ ));
+
+    // Bail if the PlanningSceneMonitor is not configured.  I don't know
+    // yet what would make the configuration of it fail, probably this
+    // could be made to handle failure more gracefully.
+    if( !planning_scene_monitor_->getPlanningScene() ||
+        !planning_scene_monitor_->getPlanningScene()->isConfigured() )
+    {
+      ROS_FATAL( "sbpl_lattice_planner_3d.cpp: Planning scene not configured, failing." );
+      exit(1);
+    }
+
+    planning_scene_monitor_->addUpdateCallback( boost::bind( &SBPLLatticePlannerLayer3D::sceneUpdateCallback, this, _1 ));
+    planning_scene_monitor_->startWorldGeometryMonitor();
+    planning_scene_monitor_->startSceneMonitor();
+    planning_scene_monitor_->startStateMonitor();
 
     if ("XYThetaLattice" == environment_type_){
       ROS_DEBUG("Using a 3D costmap for theta lattice\n");
-      env_ = new EnvironmentNAVXYTHETAMLEVLAT3D();
+      env_ = new EnvironmentNAVXYTHETAMLEVLAT3D( planning_scene_monitor_ );
     }
     else{
       ROS_ERROR("XYThetaLattice is currently the only supported environment!\n");
@@ -192,14 +207,9 @@ void SBPLLatticePlannerLayer3D::initialize(std::string name, costmap_2d::Costmap
     collisionObjectsReceived = false;
     attachedObjectsReceived = false;
 
-    robot_state_client_ = nh.serviceClient<planning_environment_msgs::GetRobotState>("/environment_server/get_robot_state");
-    // get initial robot configuration for footprint:
-    // update kinematic state of the robot:
-    planning_environment_msgs::GetRobotStateRequest req;
-    planning_environment_msgs::GetRobotStateResponse resp;
-    if (!robot_state_client_.call(req, resp)){
-  	  ROS_ERROR("Error calling robot state service");
-    }
+    // If robot starts out in a strange state, add something here to
+    // wait until getStateMonitor()->haveCompleteState() returns true.
+    robot_state::RobotState robot_state = planning_scene_monitor_->getStateMonitor()->getCurrentState();
 
     std::vector<geometry_msgs::Point> footprint = base_costmap_ros_->getRobotFootprint();
     vector<sbpl_2Dpt_t> fp;
@@ -219,7 +229,7 @@ void SBPLLatticePlannerLayer3D::initialize(std::string name, costmap_2d::Costmap
               cost_map_.getOriginX(), cost_map_.getOriginY(),
               cost_map_.getResolution(),
               0, // mapdata
-              footprintLinks, resp.robot_state,
+              footprintLinks, robot_state,
               nominalvel_mpersecs,
               timetoturn45degsinplace_secs, obst_cost_thresh,
               primitive_filename_.c_str(),fp,&new_fp);
@@ -307,6 +317,7 @@ void SBPLLatticePlannerLayer3D::initialize(std::string name, costmap_2d::Costmap
     spine_costmap_ros_->start();
     arm_costmap_ros_->start();
     useMultiLayer(true);
+    env_->setupAllowedCollisions();
   }
 }
   
@@ -368,18 +379,13 @@ void SBPLLatticePlannerLayer3D::writeStats(FILE* fout, bool ret, int solution_co
 }
 
 
-void SBPLLatticePlannerLayer3D::collisionsCallback(const mapping_msgs::CollisionObjectConstPtr& msg){
-	ROS_DEBUG("CollisionObjects (%d/%d) received, storing locally", int(msg->poses.size()), int(msg->poses.size()));
-	collisionObjectsReceived = true;
-	boost::mutex::scoped_lock lock(collision_object_lock_);
-	collision_object_ = *msg;
-}
-
-void SBPLLatticePlannerLayer3D::attachedCallback(const mapping_msgs::AttachedCollisionObjectConstPtr& msg){
-	ROS_DEBUG("AttachedCollisionObjects received");
-	attachedObjectsReceived = true;
-	boost::mutex::scoped_lock lock(attached_object_lock_);
-	attached_object_ = *msg;
+void SBPLLatticePlannerLayer3D::sceneUpdateCallback( planning_scene_monitor::PlanningSceneMonitor::SceneUpdateType )
+{
+  if( type & planning_scene_monitor::PlanningSceneMonitor::UPDATE_GEOMETRY )
+  {
+    collisionObjectsReceived = true;
+    ROS_WARN( "SBPLLatticePlannerLayer3D::sceneUpdateCallback() with geometry update." );
+  }
 }
 
 bool SBPLLatticePlannerLayer3D::makePlan(const geometry_msgs::PoseStamped& start,
@@ -398,52 +404,31 @@ bool SBPLLatticePlannerLayer3D::makePlan(const geometry_msgs::PoseStamped& start
     //TODO: update the environments map size or it will crash here!!!!
   }
 
-  // update attached objects:
-  {
-	  boost::mutex::scoped_lock lock(attached_object_lock_);
-	  if (attachedObjectsReceived)
-		  env_->updateAttachedObjects(attached_object_);
-
-  }
-
-  // update collision object from local copy:
-  {
-		boost::mutex::scoped_lock lock(collision_object_lock_);
-		double collision_age = (ros::Time::now() - collision_object_.header.stamp).toSec();
-	    if (collision_age > 1.0){
-	    	ROS_WARN("Warning: sbpl_lattice_planner's collision objects might be outdated (%f s old)", collision_age);
-	    }
-		env_->updateCollisionObjects(collision_object_);
-  }
-
-
+  env_->resetCollisionCount();
 
   // update kinematic state of the robot:
-  planning_environment_msgs::GetRobotStateRequest req;
-  planning_environment_msgs::GetRobotStateResponse resp;
-  if (robot_state_client_.call(req, resp)){
-    vector<sbpl_2Dpt_t> new_fp;
-	  bool footprintUpdated = env_->updateKinematicState(resp.robot_state, &new_fp);
-    if(footprintUpdated || !controller_costmap_initialized){
-      env_->setFootprint(0,new_fp);
-      vector<geometry_msgs::Point> foot_pts;
-      for(unsigned int i=0; i<new_fp.size(); i++){
-        geometry_msgs::Point p;
-        p.x = new_fp[i].x;
-        p.y = new_fp[i].y;
-        p.z = 0;
-        foot_pts.push_back(p);
-      }
-      arm_costmap_ros_->setFootprint(foot_pts,0.15);
-      costmap_ros_->setFootprint(foot_pts,0.15);
-      controller_costmap_->setFootprint(foot_pts,0.15);
-      controller_costmap_initialized = true;
+  robot_state::RobotState robot_state = planning_scene_monitor_->getStateMonitor()->getCurrentState();
+  vector<sbpl_2Dpt_t> new_fp;
+  bool footprintUpdated = env_->updateKinematicState(robot_state, &new_fp);
+  if(footprintUpdated || !footprint_computed_){
+    env_->setFootprint(0,new_fp);
+    vector<geometry_msgs::Point> foot_pts;
+    for(unsigned int i=0; i<new_fp.size(); i++){
+      geometry_msgs::Point p;
+      p.x = new_fp[i].x;
+      p.y = new_fp[i].y;
+      p.z = 0;
+      foot_pts.push_back(p);
     }
-    env_->visualizeFootprints();
+    arm_costmap_ros_->setFootprint(foot_pts,0.15);
+    costmap_ros_->setFootprint(foot_pts,0.15);
+    if( controller_costmap_ != NULL )
+    {
+      controller_costmap_->setFootprint(foot_pts,0.15);
+    }
+    footprint_computed_ = true;
   }
-  else{
-	  ROS_ERROR("Error calling robot state service");
-  }
+  env_->visualizeFootprints();
 
   //base_costmap_ros_->clearRobotFootprint();
   //spine_costmap_ros_->clearRobotFootprint();

@@ -29,10 +29,9 @@
 #ifndef __ENVIRONMENT_3DCOLLISIONS_H_
 #define __ENVIRONMENT_3DCOLLISIONS_H_
 
-#include <planning_environment/models/collision_models.h>
-#include <planning_models/kinematic_state.h>
 #include <pcl_ros/point_cloud.h>
 #include <pcl/surface/concave_hull.h>
+#include <moveit/planning_scene_monitor/planning_scene_monitor.h>
 
 //eight-connected grid
 #define NAVXYTHETALAT_DXYWIDTH 8
@@ -185,7 +184,7 @@ class EnvironmentNav3DCollisionsBase : public DiscreteSpaceInformation
 
 public:
 
-	EnvironmentNav3DCollisionsBase();
+	EnvironmentNav3DCollisionsBase( planning_scene_monitor::PlanningSceneMonitorPtr planning_scene_monitor );
 
   /**
 	 * \brief way to set up various parameters. For a list of parameters, see the body of the function - it is pretty straightforward
@@ -371,11 +370,34 @@ public:
     */
   virtual void PrintVars(){};
 
-  /// Recompute the robot's footprint based on kinematic state, also recomputes all motion primitive footprints
+  /** @brief Recompute the robot's footprint based on kinematic state,
+   * also recomputes all motion primitive footprints.
+   *
+   * Uses downprojectShape(), so currently only supports MESH shape
+   * types. */
   bool updateFootprint();
-  void updateCollisionObjects(const mapping_msgs::CollisionObject& coll);
-  bool updateKinematicState(const motion_planning_msgs::RobotState &robot_state, vector<sbpl_2Dpt_t>* new_fp);
-  void updateAttachedObjects(const mapping_msgs::AttachedCollisionObject& coll);
+
+  /** @brief Project points from the given shape at global pose
+   * transform onto z=0 plane, divide by the cell size, discretize
+   * them, and append them to the output vector "points".
+   *
+   * Currently only supports MESH shape types, and silently ignores
+   * others. */
+  void downprojectShape( const shapes::ShapeConstPtr shape,
+                         const Eigen::Affine3d& transform,
+                         std::vector<cv::Point>& points ) const;
+
+  /** @brief Notify this environment that a collision update has been
+   * received by the planning_scene_monitor_. */
+  void notifyCollisionReceived();
+
+  /** @brief Set kinematic_state_ = robot_state, update
+   * downprojectedFootprint from it, copy downprojectedFootprint into
+   * new_fp, and return true if the footprint has changed. */
+  bool updateKinematicState(const robot_state::RobotState &robot_state, vector<sbpl_2Dpt_t>* new_fp);
+
+///// Seems like MoveIt makes this unnecessary...
+/////  void updateAttachedObjects(const mapping_msgs::AttachedCollisionObject& coll);
 
   /// sets the robot's kinematic state to coordinate x,y,theta (2D costmap coordinates)
   void updateRobotPosition(double x, double y, double theta);
@@ -419,10 +441,9 @@ public:
 
   void visualize3DCollsisions();
 
-
 	//member data
-	planning_environment::CollisionModels m_planningCollisionModel;
-	planning_models::KinematicState* m_kinematicState;
+  planning_scene_monitor::PlanningSceneMonitorPtr planning_scene_monitor_;
+  robot_state::RobotState kinematic_state_;
 	unsigned m_num3DCollChecks;
 	unsigned m_num2DCollChecks;
   unsigned firstSol2DChecks;
@@ -437,7 +458,6 @@ public:
 
 	bool bInitialized;
 
-	bool m_collisionReceived;
 	ros::Time m_collisionObjectsTime;
   vector<sbpl_2Dpt_t> downprojectedFootprint;
 
@@ -561,7 +581,8 @@ class EnvironmentNav3DCollisions : public EnvironmentNav3DCollisionsBase
 {
 
  public:
-  EnvironmentNav3DCollisions()
+  EnvironmentNav3DCollisions( planning_scene_monitor::PlanningSceneMonitorPtr planning_scene_monitor )
+    : EnvironmentNav3DCollisionsBase( planning_scene_monitor )
   {
 	HashTableSize = 0;
 	Coord2StateIDHashTable = NULL;

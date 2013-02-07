@@ -54,14 +54,24 @@ using namespace std;
 //global representation
 #include <nav_core/base_global_planner.h>
 
-#include <mapping_msgs/CollisionObject.h>
-#include <mapping_msgs/AttachedCollisionObject.h>
+#include <moveit/planning_scene_monitor/planning_scene_monitor.h>
 
 namespace sbpl_lattice_planner_layer_3d{
 
 class SBPLLatticePlannerLayer3D : public nav_core::BaseGlobalPlanner{
 public:
   
+  /** @brief Return the (latest) instance of this class created.
+   *
+   * This is a hack to implement a connection between
+   * SBPLLatticePlannerLayer3D and PoseFollower3D which is not
+   * otherwise possible in the groovy release of move_base.
+   *
+   * @return The most-recently create instance of
+   * SBPLLatticePlannerLayer3D, or NULL if none has been created yet.
+   */
+  static SBPLLatticePlannerLayer3D* getInstance() { return instance_; }
+
   /**
    * @brief  Default constructor for the NavFnROS object
    */
@@ -103,6 +113,11 @@ public:
   void close_files();
   void drawPose(double x, double y, double theta, double i){env_->drawPose(x,y,theta,i);};
 
+  void setControllerCostmap( costmap_2d::Costmap2DROS* controller_costmap ) { controller_costmap_ = controller_costmap; }
+  costmap_2d::Costmap2DROS* getControllerCostmap() const { return controller_costmap_; }
+
+  planning_scene_monitor::PlanningSceneMonitorPtr getPlanningSceneMonitor() { return planning_scene_monitor_; }
+
 private:
   bool use_multi_layer;
   unsigned char costMapCostToSBPLCost(unsigned char newcost);
@@ -111,6 +126,7 @@ private:
                     const geometry_msgs::PoseStamped& goal);
 
   void writeStats(FILE* fout, bool ret, int solution_cost);
+
   bool initialized_;
 
   SBPLPlanner* planner_;
@@ -139,27 +155,25 @@ private:
   costmap_2d::Costmap2DROS* arm_costmap_ros_; /**< manages the cost map for us */
   costmap_2d::Costmap2D cost_map_;        /**< local copy of the costmap underlying cost_map_ros_ */
   costmap_2d::Costmap2DROS* controller_costmap_;
-  bool controller_costmap_initialized;
+  bool footprint_computed_;
 
   ros::Publisher plan_pub_;
   ros::Publisher stats_publisher_;
   ros::Subscriber collision_objects_sub_, attached_objects_sub_;
-  ros::ServiceClient robot_state_client_;
-  ros::ServiceClient octomap_client_;
 
   std::vector<geometry_msgs::Point> footprint_;
-  mapping_msgs::CollisionObject collision_object_;
-  mapping_msgs::AttachedCollisionObject attached_object_;
-  boost::mutex collision_object_lock_;
-  boost::mutex attached_object_lock_;
 
   bool collisionObjectsReceived;
   bool attachedObjectsReceived;
 
   FILE* file1Layer;
   FILE* fileMLayer;
+
+  planning_scene_monitor::PlanningSceneMonitorPtr planning_scene_monitor_;
+
+  static SBPLLatticePlannerLayer3D* instance_;
 };
-};
+
+} // end namespace sbpl_lattice_planner_layer_3d
 
 #endif
-

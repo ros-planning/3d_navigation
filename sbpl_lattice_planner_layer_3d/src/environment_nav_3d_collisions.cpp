@@ -48,37 +48,45 @@ static clock_t time_getsuccs = 0;
 #define XYTHETA2INDEX(X,Y,THETA) (THETA + X*NAVXYTHETALAT_THETADIRS + Y*EnvNAVXYTHETALATCfg.EnvWidth_c*NAVXYTHETALAT_THETADIRS)
 
 //-----------------constructors/destructors-------------------------------
-EnvironmentNav3DCollisionsBase::EnvironmentNav3DCollisionsBase()
- : m_planningCollisionModel("robot_description"),
-   m_kinematicState(NULL),
-   m_num3DCollChecks(0), m_num2DCollChecks(0),
-   cloud_3d_collisions(new pcl::PointCloud<pcl::PointXYZ>)
+EnvironmentNav3DCollisionsBase::EnvironmentNav3DCollisionsBase(
+  planning_scene_monitor::PlanningSceneMonitorPtr planning_scene_monitor )
+  : planning_scene_monitor_( planning_scene_monitor )
+    m_num3DCollChecks( 0 ),
+    m_num2DCollChecks( 0 ),
+    cloud_3d_collisions( new pcl::PointCloud<pcl::PointXYZ> )
 {
   always3Dcheck = false;
-	EnvNAVXYTHETALATCfg.obsthresh = ENVNAVXYTHETALAT_DEFAULTOBSTHRESH;
-	EnvNAVXYTHETALATCfg.cost_inscribed_thresh = EnvNAVXYTHETALATCfg.obsthresh; //the value that pretty much makes it disabled
-	EnvNAVXYTHETALATCfg.cost_possibly_circumscribed_thresh = -1; //the value that pretty much makes it disabled
+  EnvNAVXYTHETALATCfg.obsthresh = ENVNAVXYTHETALAT_DEFAULTOBSTHRESH;
 
-	grid2Dsearchfromstart = NULL;
-	grid2Dsearchfromgoal = NULL;
-	bNeedtoRecomputeStartHeuristics = true;
-	bNeedtoRecomputeGoalHeuristics = true;
-	iteration = 0;
+  //the value that pretty much makes it disabled
+  EnvNAVXYTHETALATCfg.cost_inscribed_thresh = EnvNAVXYTHETALATCfg.obsthresh;
 
-	m_kinematicState = new planning_models::KinematicState(m_planningCollisionModel.getKinematicModel());
-	bInitialized = false;
-	m_collisionReceived = false;
+  //the value that pretty much makes it disabled
+  EnvNAVXYTHETALATCfg.cost_possibly_circumscribed_thresh = -1;
 
-	EnvNAVXYTHETALATCfg.actionwidth = NAVXYTHETALAT_DEFAULT_ACTIONWIDTH;
+  grid2Dsearchfromstart = NULL;
+  grid2Dsearchfromgoal = NULL;
+  bNeedtoRecomputeStartHeuristics = true;
+  bNeedtoRecomputeGoalHeuristics = true;
+  iteration = 0;
 
-	//no memory allocated in cfg yet
-	EnvNAVXYTHETALATCfg.Grid2D = NULL;
-	EnvNAVXYTHETALATCfg.ActionsV = NULL;
-	EnvNAVXYTHETALATCfg.PredActionsV = NULL;
+  {
+    planning_scene_monitor::LockedPlanningSceneRO read_only_scene( planning_scene_monitor_ );
+    kinematic_state_ = read_only_scene->getCurrentState();
+  }
 
-	ros::NodeHandle nh("~");
-	m_collisionMarkerPub = nh.advertise<visualization_msgs::MarkerArray>("planning_visualizer_array", 10);
-	m_footprintPolygonPub = nh.advertise<geometry_msgs::PolygonStamped>("downprojected_footprint", 10);
+  bInitialized = false;
+
+  EnvNAVXYTHETALATCfg.actionwidth = NAVXYTHETALAT_DEFAULT_ACTIONWIDTH;
+
+  //no memory allocated in cfg yet
+  EnvNAVXYTHETALATCfg.Grid2D = NULL;
+  EnvNAVXYTHETALATCfg.ActionsV = NULL;
+  EnvNAVXYTHETALATCfg.PredActionsV = NULL;
+
+  ros::NodeHandle nh("~");
+/////  m_collisionMarkerPub = nh.advertise<visualization_msgs::MarkerArray>("planning_visualizer_array", 10);
+  m_footprintPolygonPub = nh.advertise<geometry_msgs::PolygonStamped>("downprojected_footprint", 10);
   footPointsPub = nh.advertise<pcl::PointCloud<pcl::PointXYZ> >("cool_stuff",10);
 
   cloud_3d_collisions->header.frame_id = "map";
@@ -89,37 +97,36 @@ EnvironmentNav3DCollisionsBase::EnvironmentNav3DCollisionsBase()
 
 EnvironmentNav3DCollisionsBase::~EnvironmentNav3DCollisionsBase()
 {
+  SBPL_PRINTF("destroying XYTHETALATTICE\n");
+  if(grid2Dsearchfromstart != NULL)
+    delete grid2Dsearchfromstart;
+  grid2Dsearchfromstart = NULL;
 
-	SBPL_PRINTF("destroying XYTHETALATTICE\n");
-	if(grid2Dsearchfromstart != NULL)
-		delete grid2Dsearchfromstart;
-	grid2Dsearchfromstart = NULL;
+  if(grid2Dsearchfromgoal != NULL)
+    delete grid2Dsearchfromgoal;
+  grid2Dsearchfromgoal = NULL;
 
-	if(grid2Dsearchfromgoal != NULL)
-		delete grid2Dsearchfromgoal;
-	grid2Dsearchfromgoal = NULL;
+  if(EnvNAVXYTHETALATCfg.Grid2D != NULL)
+  {	
+    for (int x = 0; x < EnvNAVXYTHETALATCfg.EnvWidth_c; x++) 
+      delete [] EnvNAVXYTHETALATCfg.Grid2D[x];
+    delete [] EnvNAVXYTHETALATCfg.Grid2D;
+    EnvNAVXYTHETALATCfg.Grid2D = NULL;
+  }
 
-	if(EnvNAVXYTHETALATCfg.Grid2D != NULL)
-	{	
-		for (int x = 0; x < EnvNAVXYTHETALATCfg.EnvWidth_c; x++) 
-			delete [] EnvNAVXYTHETALATCfg.Grid2D[x];
-		delete [] EnvNAVXYTHETALATCfg.Grid2D;
-		EnvNAVXYTHETALATCfg.Grid2D = NULL;
-	}
-
-	//delete actions
-	if(EnvNAVXYTHETALATCfg.ActionsV != NULL)
-	{
-		for(int tind = 0; tind < NAVXYTHETALAT_THETADIRS; tind++)
-			delete [] EnvNAVXYTHETALATCfg.ActionsV[tind];
-		delete [] EnvNAVXYTHETALATCfg.ActionsV;
-		EnvNAVXYTHETALATCfg.ActionsV = NULL;
-	}
-	if(EnvNAVXYTHETALATCfg.PredActionsV != NULL)
-	{
-		delete [] EnvNAVXYTHETALATCfg.PredActionsV;
-		EnvNAVXYTHETALATCfg.PredActionsV = NULL;
-	}
+  //delete actions
+  if(EnvNAVXYTHETALATCfg.ActionsV != NULL)
+  {
+    for(int tind = 0; tind < NAVXYTHETALAT_THETADIRS; tind++)
+      delete [] EnvNAVXYTHETALATCfg.ActionsV[tind];
+    delete [] EnvNAVXYTHETALATCfg.ActionsV;
+    EnvNAVXYTHETALATCfg.ActionsV = NULL;
+  }
+  if(EnvNAVXYTHETALATCfg.PredActionsV != NULL)
+  {
+    delete [] EnvNAVXYTHETALATCfg.PredActionsV;
+    EnvNAVXYTHETALATCfg.PredActionsV = NULL;
+  }
 }
 
 //---------------------------------------------------------------------
@@ -144,11 +151,13 @@ static unsigned int inthash(unsigned int key)
 
 
 void EnvironmentNav3DCollisionsBase::SetConfiguration(int width, int height,
-					const unsigned char* mapdata,
-					int startx, int starty, int starttheta,
-					int goalx, int goaly, int goaltheta,
-					double origin_x, double origin_y,
-					double cellsize_m, double nominalvel_mpersecs, double timetoturn45degsinplace_secs) {
+                                                      const unsigned char* mapdata,
+                                                      int startx, int starty, int starttheta,
+                                                      int goalx, int goaly, int goaltheta,
+                                                      double origin_x, double origin_y,
+                                                      double cellsize_m, double nominalvel_mpersecs,
+                                                      double timetoturn45degsinplace_secs)
+{
   EnvNAVXYTHETALATCfg.EnvWidth_c = width;
   EnvNAVXYTHETALATCfg.EnvHeight_c = height;
   EnvNAVXYTHETALATCfg.StartX_c = startx;
@@ -202,11 +211,11 @@ void EnvironmentNav3DCollisionsBase::SetConfiguration(int width, int height,
   //environment:
   // always init to 0!
 //  if (0 == mapdata) {
-    for (int y = 0; y < EnvNAVXYTHETALATCfg.EnvHeight_c; y++) {
-      for (int x = 0; x < EnvNAVXYTHETALATCfg.EnvWidth_c; x++) {
-	EnvNAVXYTHETALATCfg.Grid2D[x][y] = 0;
-      }
+  for (int y = 0; y < EnvNAVXYTHETALATCfg.EnvHeight_c; y++) {
+    for (int x = 0; x < EnvNAVXYTHETALATCfg.EnvWidth_c; x++) {
+      EnvNAVXYTHETALATCfg.Grid2D[x][y] = 0;
     }
+  }
 //  }
 //  else {
 //    for (int y = 0; y < EnvNAVXYTHETALATCfg.EnvHeight_c; y++) {
@@ -219,1026 +228,987 @@ void EnvironmentNav3DCollisionsBase::SetConfiguration(int width, int height,
 
 bool EnvironmentNav3DCollisionsBase::ReadinCell(EnvNAVXYTHETALAT3Dcell_t* cell, FILE* fIn)
 {
-   char sTemp[60];
+  char sTemp[60];
 
-	if(fscanf(fIn, "%s", sTemp) == 0)
-	   return false;
-	cell->x = atoi(sTemp);
-	if(fscanf(fIn, "%s", sTemp) == 0)
-	   return false;
-	cell->y = atoi(sTemp);
-	if(fscanf(fIn, "%s", sTemp) == 0)
-	   return false;
-	cell->theta = atoi(sTemp);
+  if(fscanf(fIn, "%s", sTemp) == 0)
+    return false;
+  cell->x = atoi(sTemp);
+  if(fscanf(fIn, "%s", sTemp) == 0)
+    return false;
+  cell->y = atoi(sTemp);
+  if(fscanf(fIn, "%s", sTemp) == 0)
+    return false;
+  cell->theta = atoi(sTemp);
 
-    //normalize the angle
-	cell->theta = NORMALIZEDISCTHETA(cell->theta, NAVXYTHETALAT_THETADIRS);
+  //normalize the angle
+  cell->theta = NORMALIZEDISCTHETA(cell->theta, NAVXYTHETALAT_THETADIRS);
 
-	return true;
+  return true;
 }
 
 bool EnvironmentNav3DCollisionsBase::ReadinPose(EnvNAVXYTHETALAT3Dpt_t* pose, FILE* fIn)
 {
-   char sTemp[60];
+  char sTemp[60];
 
-	if(fscanf(fIn, "%s", sTemp) == 0)
-	   return false;
-	pose->x = atof(sTemp);
-	if(fscanf(fIn, "%s", sTemp) == 0)
-	   return false;
-	pose->y = atof(sTemp);
-	if(fscanf(fIn, "%s", sTemp) == 0)
-	   return false;
-	pose->theta = atof(sTemp);
+  if(fscanf(fIn, "%s", sTemp) == 0)
+    return false;
+  pose->x = atof(sTemp);
+  if(fscanf(fIn, "%s", sTemp) == 0)
+    return false;
+  pose->y = atof(sTemp);
+  if(fscanf(fIn, "%s", sTemp) == 0)
+    return false;
+  pose->theta = atof(sTemp);
 
-	pose->theta = normalizeAngle(pose->theta);
+  pose->theta = normalizeAngle(pose->theta);
 
-	return true;
+  return true;
 }
 
 bool EnvironmentNav3DCollisionsBase::ReadinMotionPrimitive(SBPL_xytheta_mprimitive* pMotPrim, FILE* fIn)
 {
-    char sTemp[1024];
-	int dTemp;
-    char sExpected[1024];
-    int numofIntermPoses;
+  char sTemp[1024];
+  int dTemp;
+  char sExpected[1024];
+  int numofIntermPoses;
 
-    //read in actionID
-    strcpy(sExpected, "primID:");
-    if(fscanf(fIn, "%s", sTemp) == 0)
-        return false;
-    if(strcmp(sTemp, sExpected) != 0){
-        SBPL_ERROR("ERROR: expected %s but got %s\n", sExpected, sTemp);
-        return false;
-    }
-    if(fscanf(fIn, "%d", &pMotPrim->motprimID) != 1)
-        return false;
+  //read in actionID
+  strcpy(sExpected, "primID:");
+  if(fscanf(fIn, "%s", sTemp) == 0)
+    return false;
+  if(strcmp(sTemp, sExpected) != 0){
+    SBPL_ERROR("ERROR: expected %s but got %s\n", sExpected, sTemp);
+    return false;
+  }
+  if(fscanf(fIn, "%d", &pMotPrim->motprimID) != 1)
+    return false;
 
-    //read in start angle
-    strcpy(sExpected, "startangle_c:");
-    if(fscanf(fIn, "%s", sTemp) == 0)
-        return false;
-    if(strcmp(sTemp, sExpected) != 0){
-        SBPL_ERROR("ERROR: expected %s but got %s\n", sExpected, sTemp);
-        return false;
-    }
-   if(fscanf(fIn, "%d", &dTemp) == 0)
-   {
-	   SBPL_ERROR("ERROR reading startangle\n");
-       return false;	
-   }
-   pMotPrim->starttheta_c = dTemp;
+  //read in start angle
+  strcpy(sExpected, "startangle_c:");
+  if(fscanf(fIn, "%s", sTemp) == 0)
+    return false;
+  if(strcmp(sTemp, sExpected) != 0){
+    SBPL_ERROR("ERROR: expected %s but got %s\n", sExpected, sTemp);
+    return false;
+  }
+  if(fscanf(fIn, "%d", &dTemp) == 0)
+  {
+    SBPL_ERROR("ERROR reading startangle\n");
+    return false;	
+  }
+  pMotPrim->starttheta_c = dTemp;
  
-   //read in end pose
-   strcpy(sExpected, "endpose_c:");
-   if(fscanf(fIn, "%s", sTemp) == 0)
-       return false;
-   if(strcmp(sTemp, sExpected) != 0){
-       SBPL_ERROR("ERROR: expected %s but got %s\n", sExpected, sTemp);
-       return false;
-   }
+  //read in end pose
+  strcpy(sExpected, "endpose_c:");
+  if(fscanf(fIn, "%s", sTemp) == 0)
+    return false;
+  if(strcmp(sTemp, sExpected) != 0){
+    SBPL_ERROR("ERROR: expected %s but got %s\n", sExpected, sTemp);
+    return false;
+  }
 
-   if(ReadinCell(&pMotPrim->endcell, fIn) == false){
-		SBPL_ERROR("ERROR: failed to read in endsearchpose\n");
-        return false;
-   }
+  if(ReadinCell(&pMotPrim->endcell, fIn) == false){
+    SBPL_ERROR("ERROR: failed to read in endsearchpose\n");
+    return false;
+  }
    
-    //read in action cost
-    strcpy(sExpected, "additionalactioncostmult:");
-    if(fscanf(fIn, "%s", sTemp) == 0)
-        return false;
-    if(strcmp(sTemp, sExpected) != 0){
-        SBPL_ERROR("ERROR: expected %s but got %s\n", sExpected, sTemp);
-        return false;
-    }
-    if(fscanf(fIn, "%d", &dTemp) != 1)
-        return false;
-	pMotPrim->additionalactioncostmult = dTemp;
+  //read in action cost
+  strcpy(sExpected, "additionalactioncostmult:");
+  if(fscanf(fIn, "%s", sTemp) == 0)
+    return false;
+  if(strcmp(sTemp, sExpected) != 0){
+    SBPL_ERROR("ERROR: expected %s but got %s\n", sExpected, sTemp);
+    return false;
+  }
+  if(fscanf(fIn, "%d", &dTemp) != 1)
+    return false;
+  pMotPrim->additionalactioncostmult = dTemp;
     
-    //read in intermediate poses
-    strcpy(sExpected, "intermediateposes:");
-    if(fscanf(fIn, "%s", sTemp) == 0)
-        return false;
-    if(strcmp(sTemp, sExpected) != 0){
-        SBPL_ERROR("ERROR: expected %s but got %s\n", sExpected, sTemp);
-        return false;
+  //read in intermediate poses
+  strcpy(sExpected, "intermediateposes:");
+  if(fscanf(fIn, "%s", sTemp) == 0)
+    return false;
+  if(strcmp(sTemp, sExpected) != 0){
+    SBPL_ERROR("ERROR: expected %s but got %s\n", sExpected, sTemp);
+    return false;
+  }
+  if(fscanf(fIn, "%d", &numofIntermPoses) != 1)
+    return false;
+  //all intermposes should be with respect to 0,0 as starting pose since it will be added later and should be done 
+  //after the action is rotated by initial orientation
+  for(int i = 0; i < numofIntermPoses; i++){
+    EnvNAVXYTHETALAT3Dpt_t intermpose;
+    if(ReadinPose(&intermpose, fIn) == false){
+      SBPL_ERROR("ERROR: failed to read in intermediate poses\n");
+      return false;
     }
-    if(fscanf(fIn, "%d", &numofIntermPoses) != 1)
-        return false;
-	//all intermposes should be with respect to 0,0 as starting pose since it will be added later and should be done 
-	//after the action is rotated by initial orientation
-    for(int i = 0; i < numofIntermPoses; i++){
-        EnvNAVXYTHETALAT3Dpt_t intermpose;
-        if(ReadinPose(&intermpose, fIn) == false){
-            SBPL_ERROR("ERROR: failed to read in intermediate poses\n");
-            return false;
-        }
-		pMotPrim->intermptV.push_back(intermpose);
-    }
+    pMotPrim->intermptV.push_back(intermpose);
+  }
 
-	//check that the last pose corresponds correctly to the last pose
-	EnvNAVXYTHETALAT3Dpt_t sourcepose;
-	sourcepose.x = DISCXY2CONT(0, EnvNAVXYTHETALATCfg.cellsize_m);
-	sourcepose.y = DISCXY2CONT(0, EnvNAVXYTHETALATCfg.cellsize_m);
-	sourcepose.theta = DiscTheta2Cont(pMotPrim->starttheta_c, NAVXYTHETALAT_THETADIRS);
-	double mp_endx_m = sourcepose.x + pMotPrim->intermptV[pMotPrim->intermptV.size()-1].x;
-	double mp_endy_m = sourcepose.y + pMotPrim->intermptV[pMotPrim->intermptV.size()-1].y;
-	double mp_endtheta_rad = pMotPrim->intermptV[pMotPrim->intermptV.size()-1].theta;				
-	int endx_c = CONTXY2DISC(mp_endx_m, EnvNAVXYTHETALATCfg.cellsize_m);
-	int endy_c = CONTXY2DISC(mp_endy_m, EnvNAVXYTHETALATCfg.cellsize_m);
-	int endtheta_c = ContTheta2Disc(mp_endtheta_rad, NAVXYTHETALAT_THETADIRS);
-	if(endx_c != pMotPrim->endcell.x || endy_c != pMotPrim->endcell.y || endtheta_c != pMotPrim->endcell.theta)
-	{	
-		SBPL_ERROR("ERROR: incorrect primitive %d with startangle=%d last interm point %f %f %f does not match end pose %d %d %d\n", 
-			pMotPrim->motprimID, pMotPrim->starttheta_c,
-			pMotPrim->intermptV[pMotPrim->intermptV.size()-1].x, pMotPrim->intermptV[pMotPrim->intermptV.size()-1].y, pMotPrim->intermptV[pMotPrim->intermptV.size()-1].theta,
-			pMotPrim->endcell.x, pMotPrim->endcell.y,pMotPrim->endcell.theta);	
-			return false;
-	}
+  //check that the last pose corresponds correctly to the last pose
+  EnvNAVXYTHETALAT3Dpt_t sourcepose;
+  sourcepose.x = DISCXY2CONT(0, EnvNAVXYTHETALATCfg.cellsize_m);
+  sourcepose.y = DISCXY2CONT(0, EnvNAVXYTHETALATCfg.cellsize_m);
+  sourcepose.theta = DiscTheta2Cont(pMotPrim->starttheta_c, NAVXYTHETALAT_THETADIRS);
+  double mp_endx_m = sourcepose.x + pMotPrim->intermptV[pMotPrim->intermptV.size()-1].x;
+  double mp_endy_m = sourcepose.y + pMotPrim->intermptV[pMotPrim->intermptV.size()-1].y;
+  double mp_endtheta_rad = pMotPrim->intermptV[pMotPrim->intermptV.size()-1].theta;				
+  int endx_c = CONTXY2DISC(mp_endx_m, EnvNAVXYTHETALATCfg.cellsize_m);
+  int endy_c = CONTXY2DISC(mp_endy_m, EnvNAVXYTHETALATCfg.cellsize_m);
+  int endtheta_c = ContTheta2Disc(mp_endtheta_rad, NAVXYTHETALAT_THETADIRS);
+  if(endx_c != pMotPrim->endcell.x || endy_c != pMotPrim->endcell.y || endtheta_c != pMotPrim->endcell.theta)
+  {	
+    SBPL_ERROR("ERROR: incorrect primitive %d with startangle=%d last interm point %f %f %f does not match end pose %d %d %d\n", 
+               pMotPrim->motprimID, pMotPrim->starttheta_c,
+               pMotPrim->intermptV[pMotPrim->intermptV.size()-1].x, pMotPrim->intermptV[pMotPrim->intermptV.size()-1].y, pMotPrim->intermptV[pMotPrim->intermptV.size()-1].theta,
+               pMotPrim->endcell.x, pMotPrim->endcell.y,pMotPrim->endcell.theta);	
+    return false;
+  }
 
-  
-    return true;
+  return true;
 }
-
-
 
 bool EnvironmentNav3DCollisionsBase::ReadMotionPrimitives(FILE* fMotPrims)
 {
-    char sTemp[1024], sExpected[1024];
-    float fTemp;
-	int dTemp;
-    int totalNumofActions = 0;
+  char sTemp[1024], sExpected[1024];
+  float fTemp;
+  int dTemp;
+  int totalNumofActions = 0;
 
-    SBPL_PRINTF("Reading in motion primitives...");
+  SBPL_PRINTF("Reading in motion primitives...");
     
-    //read in the resolution
-    strcpy(sExpected, "resolution_m:");
-    if(fscanf(fMotPrims, "%s", sTemp) == 0)
-        return false;
-    if(strcmp(sTemp, sExpected) != 0){
-        SBPL_ERROR("ERROR: expected %s but got %s\n", sExpected, sTemp);
-        return false;
-    }
-    if(fscanf(fMotPrims, "%f", &fTemp) == 0)
-        return false;
-    if(fabs(fTemp-EnvNAVXYTHETALATCfg.cellsize_m) > ERR_EPS){
-        SBPL_ERROR("ERROR: invalid resolution %f (instead of %f) in the dynamics file\n", 
+  //read in the resolution
+  strcpy(sExpected, "resolution_m:");
+  if(fscanf(fMotPrims, "%s", sTemp) == 0)
+    return false;
+  if(strcmp(sTemp, sExpected) != 0){
+    SBPL_ERROR("ERROR: expected %s but got %s\n", sExpected, sTemp);
+    return false;
+  }
+  if(fscanf(fMotPrims, "%f", &fTemp) == 0)
+    return false;
+  if(fabs(fTemp-EnvNAVXYTHETALATCfg.cellsize_m) > ERR_EPS){
+    SBPL_ERROR("ERROR: invalid resolution %f (instead of %f) in the dynamics file\n", 
                fTemp, EnvNAVXYTHETALATCfg.cellsize_m);
-        return false;
-    }
+    return false;
+  }
 
-    //read in the angular resolution
-    strcpy(sExpected, "numberofangles:");
-    if(fscanf(fMotPrims, "%s", sTemp) == 0)
-        return false;
-    if(strcmp(sTemp, sExpected) != 0){
-        SBPL_ERROR("ERROR: expected %s but got %s\n", sExpected, sTemp);
-        return false;
-    }
-    if(fscanf(fMotPrims, "%d", &dTemp) == 0)
-        return false;
-    if(dTemp != NAVXYTHETALAT_THETADIRS){
-        SBPL_ERROR("ERROR: invalid angular resolution %d angles (instead of %d angles) in the motion primitives file\n", 
+  //read in the angular resolution
+  strcpy(sExpected, "numberofangles:");
+  if(fscanf(fMotPrims, "%s", sTemp) == 0)
+    return false;
+  if(strcmp(sTemp, sExpected) != 0){
+    SBPL_ERROR("ERROR: expected %s but got %s\n", sExpected, sTemp);
+    return false;
+  }
+  if(fscanf(fMotPrims, "%d", &dTemp) == 0)
+    return false;
+  if(dTemp != NAVXYTHETALAT_THETADIRS){
+    SBPL_ERROR("ERROR: invalid angular resolution %d angles (instead of %d angles) in the motion primitives file\n", 
                dTemp, NAVXYTHETALAT_THETADIRS);
-        return false;
-    }
+    return false;
+  }
 
 
-    //read in the total number of actions
-    strcpy(sExpected, "totalnumberofprimitives:");
-    if(fscanf(fMotPrims, "%s", sTemp) == 0)
-        return false;
-    if(strcmp(sTemp, sExpected) != 0){
-        SBPL_ERROR("ERROR: expected %s but got %s\n", sExpected, sTemp);
-        return false;
-    }
-    if(fscanf(fMotPrims, "%d", &totalNumofActions) == 0){
-        return false;
-    }
+  //read in the total number of actions
+  strcpy(sExpected, "totalnumberofprimitives:");
+  if(fscanf(fMotPrims, "%s", sTemp) == 0)
+    return false;
+  if(strcmp(sTemp, sExpected) != 0){
+    SBPL_ERROR("ERROR: expected %s but got %s\n", sExpected, sTemp);
+    return false;
+  }
+  if(fscanf(fMotPrims, "%d", &totalNumofActions) == 0){
+    return false;
+  }
 
-    for(int i = 0; i < totalNumofActions; i++){
-		SBPL_xytheta_mprimitive motprim;
+  for(int i = 0; i < totalNumofActions; i++){
+    SBPL_xytheta_mprimitive motprim;
 
-		if(EnvironmentNav3DCollisionsBase::ReadinMotionPrimitive(&motprim, fMotPrims) == false)
-			return false;
+    if(EnvironmentNav3DCollisionsBase::ReadinMotionPrimitive(&motprim, fMotPrims) == false)
+      return false;
 
-		EnvNAVXYTHETALATCfg.mprimV.push_back(motprim);
+    EnvNAVXYTHETALATCfg.mprimV.push_back(motprim);
 
-	}
-    SBPL_PRINTF("done ");
+  }
+  SBPL_PRINTF("done ");
 
-    return true;
+  return true;
 }
 
-
-void EnvironmentNav3DCollisionsBase::ComputeReplanningDataforAction(EnvNAVXYTHETALATAction_t* action)
+void EnvironmentNav3DCollisionsBase::ComputeReplanningDataforAction( EnvNAVXYTHETALATAction_t* action )
 {
-	int j;
+  int j;
 
-	//iterate over all the cells involved in the action
-	EnvNAVXYTHETALAT3Dcell_t startcell3d, endcell3d;
-	for(int i = 0; i < (int)action->intersectingcellsV.size(); i++)
-	{
+  //iterate over all the cells involved in the action
+  EnvNAVXYTHETALAT3Dcell_t startcell3d, endcell3d;
+  for(int i = 0; i < (int)action->intersectingcellsV.size(); i++)
+  {
+    // compute the translated affected search Pose - what state has an
+    // outgoing action whose intersecting cell is at 0,0
+    startcell3d.theta = action->starttheta;
+    startcell3d.x = - action->intersectingcellsV.at(i).x;
+    startcell3d.y = - action->intersectingcellsV.at(i).y;
 
-		//compute the translated affected search Pose - what state has an outgoing action whose intersecting cell is at 0,0
-		startcell3d.theta = action->starttheta;
-		startcell3d.x = - action->intersectingcellsV.at(i).x;
-		startcell3d.y = - action->intersectingcellsV.at(i).y;
+    // compute the translated affected search Pose - what state has an
+    // incoming action whose intersecting cell is at 0,0
+    endcell3d.theta = NORMALIZEDISCTHETA(action->endtheta, NAVXYTHETALAT_THETADIRS); 
+    endcell3d.x = startcell3d.x + action->dX; 
+    endcell3d.y = startcell3d.y + action->dY;
 
-		//compute the translated affected search Pose - what state has an incoming action whose intersecting cell is at 0,0
-		endcell3d.theta = NORMALIZEDISCTHETA(action->endtheta, NAVXYTHETALAT_THETADIRS); 
-		endcell3d.x = startcell3d.x + action->dX; 
-		endcell3d.y = startcell3d.y + action->dY;
+    //store the cells if not already there
+    for(j = 0; j < (int)affectedsuccstatesV.size(); j++)
+    {
+      if(affectedsuccstatesV.at(j) == endcell3d)
+        break;
+    }
+    if (j == (int)affectedsuccstatesV.size())
+      affectedsuccstatesV.push_back(endcell3d);
 
-		//store the cells if not already there
-		for(j = 0; j < (int)affectedsuccstatesV.size(); j++)
-		{
-			if(affectedsuccstatesV.at(j) == endcell3d)
-				break;
-		}
-		if (j == (int)affectedsuccstatesV.size())
-			affectedsuccstatesV.push_back(endcell3d);
+    for(j = 0; j < (int)affectedpredstatesV.size(); j++)
+    {
+      if(affectedpredstatesV.at(j) == startcell3d)
+        break;
+    }
+    if (j == (int)affectedpredstatesV.size())
+      affectedpredstatesV.push_back(startcell3d);
 
-		for(j = 0; j < (int)affectedpredstatesV.size(); j++)
-		{
-			if(affectedpredstatesV.at(j) == startcell3d)
-				break;
-		}
-		if (j == (int)affectedpredstatesV.size())
-			affectedpredstatesV.push_back(startcell3d);
+  } // over intersecting cells
 
-    }//over intersecting cells
+  //add the centers since with h2d we are using these in cost computations
+  //---intersecting cell = origin
+  // compute the translated affected search Pose - what state has an
+  // outgoing action whose intersecting cell is at 0,0
+  startcell3d.theta = action->starttheta;
+  startcell3d.x = - 0;
+  startcell3d.y = - 0;
 
-	
+  // compute the translated affected search Pose - what state has an
+  // incoming action whose intersecting cell is at 0,0
+  endcell3d.theta = NORMALIZEDISCTHETA(action->endtheta, NAVXYTHETALAT_THETADIRS); 
+  endcell3d.x = startcell3d.x + action->dX; 
+  endcell3d.y = startcell3d.y + action->dY;
 
-	//add the centers since with h2d we are using these in cost computations
-	//---intersecting cell = origin
-	//compute the translated affected search Pose - what state has an outgoing action whose intersecting cell is at 0,0
-	startcell3d.theta = action->starttheta;
-	startcell3d.x = - 0;
-	startcell3d.y = - 0;
+  //store the cells if not already there
+  for(j = 0; j < (int)affectedsuccstatesV.size(); j++)
+  {
+    if(affectedsuccstatesV.at(j) == endcell3d)
+      break;
+  }
+  if (j == (int)affectedsuccstatesV.size())
+    affectedsuccstatesV.push_back(endcell3d);
 
-	//compute the translated affected search Pose - what state has an incoming action whose intersecting cell is at 0,0
-	endcell3d.theta = NORMALIZEDISCTHETA(action->endtheta, NAVXYTHETALAT_THETADIRS); 
-	endcell3d.x = startcell3d.x + action->dX; 
-	endcell3d.y = startcell3d.y + action->dY;
+  for(j = 0; j < (int)affectedpredstatesV.size(); j++)
+  {
+    if(affectedpredstatesV.at(j) == startcell3d)
+      break;
+  }
+  if (j == (int)affectedpredstatesV.size())
+    affectedpredstatesV.push_back(startcell3d);
 
-	//store the cells if not already there
-	for(j = 0; j < (int)affectedsuccstatesV.size(); j++)
-	{
-		if(affectedsuccstatesV.at(j) == endcell3d)
-			break;
-	}
-	if (j == (int)affectedsuccstatesV.size())
-		affectedsuccstatesV.push_back(endcell3d);
+  //---intersecting cell = outcome state
 
-	for(j = 0; j < (int)affectedpredstatesV.size(); j++)
-	{
-		if(affectedpredstatesV.at(j) == startcell3d)
-			break;
-	}
-	if (j == (int)affectedpredstatesV.size())
-		affectedpredstatesV.push_back(startcell3d);
+  // compute the translated affected search Pose - what state has an
+  // outgoing action whose intersecting cell is at 0,0
+  startcell3d.theta = action->starttheta;
+  startcell3d.x = - action->dX;
+  startcell3d.y = - action->dY;
 
+  // compute the translated affected search Pose - what state has an
+  // incoming action whose intersecting cell is at 0,0
+  endcell3d.theta = NORMALIZEDISCTHETA(action->endtheta, NAVXYTHETALAT_THETADIRS); 
+  endcell3d.x = startcell3d.x + action->dX; 
+  endcell3d.y = startcell3d.y + action->dY;
 
-	//---intersecting cell = outcome state
-	//compute the translated affected search Pose - what state has an outgoing action whose intersecting cell is at 0,0
-	startcell3d.theta = action->starttheta;
-	startcell3d.x = - action->dX;
-	startcell3d.y = - action->dY;
+  for(j = 0; j < (int)affectedsuccstatesV.size(); j++)
+  {
+    if(affectedsuccstatesV.at(j) == endcell3d)
+      break;
+  }
+  if (j == (int)affectedsuccstatesV.size())
+    affectedsuccstatesV.push_back(endcell3d);
 
-	//compute the translated affected search Pose - what state has an incoming action whose intersecting cell is at 0,0
-	endcell3d.theta = NORMALIZEDISCTHETA(action->endtheta, NAVXYTHETALAT_THETADIRS); 
-	endcell3d.x = startcell3d.x + action->dX; 
-	endcell3d.y = startcell3d.y + action->dY;
-
-	for(j = 0; j < (int)affectedsuccstatesV.size(); j++)
-	{
-		if(affectedsuccstatesV.at(j) == endcell3d)
-			break;
-	}
-	if (j == (int)affectedsuccstatesV.size())
-		affectedsuccstatesV.push_back(endcell3d);
-
-	for(j = 0; j < (int)affectedpredstatesV.size(); j++)
-	{
-		if(affectedpredstatesV.at(j) == startcell3d)
-			break;
-	}
-	if (j == (int)affectedpredstatesV.size())
-		affectedpredstatesV.push_back(startcell3d);
-
-
+  for(j = 0; j < (int)affectedpredstatesV.size(); j++)
+  {
+    if(affectedpredstatesV.at(j) == startcell3d)
+      break;
+  }
+  if (j == (int)affectedpredstatesV.size())
+    affectedpredstatesV.push_back(startcell3d);
 }
 
 
-//computes all the 3D states whose outgoing actions are potentially affected when cell (0,0) changes its status
-//it also does the same for the 3D states whose incoming actions are potentially affected when cell (0,0) changes its status
+// computes all the 3D states whose outgoing actions are potentially
+// affected when cell (0,0) changes its status it also does the same
+// for the 3D states whose incoming actions are potentially affected
+// when cell (0,0) changes its status
 void EnvironmentNav3DCollisionsBase::ComputeReplanningData()
 {
+  // iterate over all actions
 
-    //iterate over all actions
-	//orientations
-	for(int tind = 0; tind < NAVXYTHETALAT_THETADIRS; tind++)
-    {        
-        //actions
-		for(int aind = 0; aind < EnvNAVXYTHETALATCfg.actionwidth; aind++)
-		{
-            //compute replanning data for this action 
-			ComputeReplanningDataforAction(&EnvNAVXYTHETALATCfg.ActionsV[tind][aind]);
-		}
-	}
+  // orientations
+  for(int tind = 0; tind < NAVXYTHETALAT_THETADIRS; tind++)
+  {        
+    // actions
+    for(int aind = 0; aind < EnvNAVXYTHETALATCfg.actionwidth; aind++)
+    {
+      // compute replanning data for this action 
+      ComputeReplanningDataforAction( &EnvNAVXYTHETALATCfg.ActionsV[ tind ][ aind ]);
+    }
+  }
 }
 
 //here motionprimitivevector contains actions only for 0 angle
-void EnvironmentNav3DCollisionsBase::PrecomputeActionswithBaseMotionPrimitive(vector<SBPL_xytheta_mprimitive>* motionprimitiveV)
+void EnvironmentNav3DCollisionsBase::PrecomputeActionswithBaseMotionPrimitive(
+  vector<SBPL_xytheta_mprimitive>* motionprimitiveV )
 {
+  SBPL_PRINTF("Pre-computing action data using base motion primitives...\n");
+  EnvNAVXYTHETALATCfg.ActionsV = new EnvNAVXYTHETALATAction_t* [NAVXYTHETALAT_THETADIRS];
+  EnvNAVXYTHETALATCfg.PredActionsV = new vector<EnvNAVXYTHETALATAction_t*> [NAVXYTHETALAT_THETADIRS];
 
-	SBPL_PRINTF("Pre-computing action data using base motion primitives...\n");
-	EnvNAVXYTHETALATCfg.ActionsV = new EnvNAVXYTHETALATAction_t* [NAVXYTHETALAT_THETADIRS];
-	EnvNAVXYTHETALATCfg.PredActionsV = new vector<EnvNAVXYTHETALATAction_t*> [NAVXYTHETALAT_THETADIRS];
+  //iterate over source angles
+  for(int tind = 0; tind < NAVXYTHETALAT_THETADIRS; tind++)
+  {
+    SBPL_PRINTF("pre-computing for angle %d out of %d angles\n", tind, NAVXYTHETALAT_THETADIRS);
+    EnvNAVXYTHETALATCfg.ActionsV[tind] = new EnvNAVXYTHETALATAction_t[motionprimitiveV->size()];
 
-	//iterate over source angles
-	for(int tind = 0; tind < NAVXYTHETALAT_THETADIRS; tind++)
-	{
-		SBPL_PRINTF("pre-computing for angle %d out of %d angles\n", tind, NAVXYTHETALAT_THETADIRS);
-		EnvNAVXYTHETALATCfg.ActionsV[tind] = new EnvNAVXYTHETALATAction_t[motionprimitiveV->size()];
+    //compute sourcepose
+    EnvNAVXYTHETALAT3Dpt_t sourcepose;
+    sourcepose.x = DISCXY2CONT(0, EnvNAVXYTHETALATCfg.cellsize_m);
+    sourcepose.y = DISCXY2CONT(0, EnvNAVXYTHETALATCfg.cellsize_m);
+    sourcepose.theta = DiscTheta2Cont(tind, NAVXYTHETALAT_THETADIRS);
 
-		//compute sourcepose
-		EnvNAVXYTHETALAT3Dpt_t sourcepose;
-		sourcepose.x = DISCXY2CONT(0, EnvNAVXYTHETALATCfg.cellsize_m);
-		sourcepose.y = DISCXY2CONT(0, EnvNAVXYTHETALATCfg.cellsize_m);
-		sourcepose.theta = DiscTheta2Cont(tind, NAVXYTHETALAT_THETADIRS);
-
-		//iterate over motion primitives
-		for(size_t aind = 0; aind < motionprimitiveV->size(); aind++)
-		{
-			EnvNAVXYTHETALATCfg.ActionsV[tind][aind].aind = aind;
-			EnvNAVXYTHETALATCfg.ActionsV[tind][aind].starttheta = tind;
-			double mp_endx_m = motionprimitiveV->at(aind).intermptV[motionprimitiveV->at(aind).intermptV.size()-1].x;
-			double mp_endy_m = motionprimitiveV->at(aind).intermptV[motionprimitiveV->at(aind).intermptV.size()-1].y;
-			double mp_endtheta_rad = motionprimitiveV->at(aind).intermptV[motionprimitiveV->at(aind).intermptV.size()-1].theta;
+    //iterate over motion primitives
+    for(size_t aind = 0; aind < motionprimitiveV->size(); aind++)
+    {
+      EnvNAVXYTHETALATCfg.ActionsV[tind][aind].aind = aind;
+      EnvNAVXYTHETALATCfg.ActionsV[tind][aind].starttheta = tind;
+      double mp_endx_m = motionprimitiveV->at(aind).intermptV[motionprimitiveV->at(aind).intermptV.size()-1].x;
+      double mp_endy_m = motionprimitiveV->at(aind).intermptV[motionprimitiveV->at(aind).intermptV.size()-1].y;
+      double mp_endtheta_rad = motionprimitiveV->at(aind).intermptV[motionprimitiveV->at(aind).intermptV.size()-1].theta;
 			
-			double endx = sourcepose.x + (mp_endx_m*cos(sourcepose.theta) - mp_endy_m*sin(sourcepose.theta));
-			double endy = sourcepose.y + (mp_endx_m*sin(sourcepose.theta) + mp_endy_m*cos(sourcepose.theta));
+      double endx = sourcepose.x + (mp_endx_m*cos(sourcepose.theta) - mp_endy_m*sin(sourcepose.theta));
+      double endy = sourcepose.y + (mp_endx_m*sin(sourcepose.theta) + mp_endy_m*cos(sourcepose.theta));
 			
-			int endx_c = CONTXY2DISC(endx, EnvNAVXYTHETALATCfg.cellsize_m);
-			int endy_c = CONTXY2DISC(endy, EnvNAVXYTHETALATCfg.cellsize_m);
+      int endx_c = CONTXY2DISC(endx, EnvNAVXYTHETALATCfg.cellsize_m);
+      int endy_c = CONTXY2DISC(endy, EnvNAVXYTHETALATCfg.cellsize_m);
 
 			
-			EnvNAVXYTHETALATCfg.ActionsV[tind][aind].endtheta = ContTheta2Disc(mp_endtheta_rad+sourcepose.theta, NAVXYTHETALAT_THETADIRS);
-			EnvNAVXYTHETALATCfg.ActionsV[tind][aind].dX = endx_c;
-			EnvNAVXYTHETALATCfg.ActionsV[tind][aind].dY = endy_c;
-			if(EnvNAVXYTHETALATCfg.ActionsV[tind][aind].dY != 0 || EnvNAVXYTHETALATCfg.ActionsV[tind][aind].dX != 0)
-				EnvNAVXYTHETALATCfg.ActionsV[tind][aind].cost = (int)(ceil(NAVXYTHETALAT_COSTMULT_MTOMM*EnvNAVXYTHETALATCfg.cellsize_m/EnvNAVXYTHETALATCfg.nominalvel_mpersecs*
-								sqrt((double)(EnvNAVXYTHETALATCfg.ActionsV[tind][aind].dX*EnvNAVXYTHETALATCfg.ActionsV[tind][aind].dX + 
-								EnvNAVXYTHETALATCfg.ActionsV[tind][aind].dY*EnvNAVXYTHETALATCfg.ActionsV[tind][aind].dY))));
-			else //cost of turn in place
-				EnvNAVXYTHETALATCfg.ActionsV[tind][aind].cost = (int)(NAVXYTHETALAT_COSTMULT_MTOMM*
-						EnvNAVXYTHETALATCfg.timetoturn45degsinplace_secs*fabs(computeMinUnsignedAngleDiff(mp_endtheta_rad,0))/(PI_CONST/4.0));
+      EnvNAVXYTHETALATCfg.ActionsV[tind][aind].endtheta = ContTheta2Disc(mp_endtheta_rad+sourcepose.theta, NAVXYTHETALAT_THETADIRS);
+      EnvNAVXYTHETALATCfg.ActionsV[tind][aind].dX = endx_c;
+      EnvNAVXYTHETALATCfg.ActionsV[tind][aind].dY = endy_c;
+      if(EnvNAVXYTHETALATCfg.ActionsV[tind][aind].dY != 0 || EnvNAVXYTHETALATCfg.ActionsV[tind][aind].dX != 0)
+      {
+        EnvNAVXYTHETALATCfg.ActionsV[tind][aind].cost =
+          (int)( ceil( NAVXYTHETALAT_COSTMULT_MTOMM * EnvNAVXYTHETALATCfg.cellsize_m /
+                       EnvNAVXYTHETALATCfg.nominalvel_mpersecs *
+                       sqrt( (double)( EnvNAVXYTHETALATCfg.ActionsV[tind][aind].dX *
+                                       EnvNAVXYTHETALATCfg.ActionsV[tind][aind].dX + 
+                                       EnvNAVXYTHETALATCfg.ActionsV[tind][aind].dY *
+                                       EnvNAVXYTHETALATCfg.ActionsV[tind][aind].dY ))));
+      }
+      else //cost of turn in place
+      {
+        EnvNAVXYTHETALATCfg.ActionsV[tind][aind].cost =
+          (int)( NAVXYTHETALAT_COSTMULT_MTOMM *
+                 EnvNAVXYTHETALATCfg.timetoturn45degsinplace_secs *
+                 fabs( computeMinUnsignedAngleDiff( mp_endtheta_rad, 0 ))
+                 / ( PI_CONST / 4.0 ));
+      }
 
-			//compute and store interm points as well as intersecting cells
-			EnvNAVXYTHETALATCfg.ActionsV[tind][aind].intersectingcellsV.clear();
-			EnvNAVXYTHETALATCfg.ActionsV[tind][aind].intermptV.clear();
-			EnvNAVXYTHETALATCfg.ActionsV[tind][aind].interm3DcellsV.clear();
-			EnvNAVXYTHETALAT3Dcell_t previnterm3Dcell;
-			previnterm3Dcell.theta = previnterm3Dcell.x = previnterm3Dcell.y = 0;
-			for (int pind = 0; pind < (int)motionprimitiveV->at(aind).intermptV.size(); pind++)
-			{
-				EnvNAVXYTHETALAT3Dpt_t intermpt = motionprimitiveV->at(aind).intermptV[pind];
+      //compute and store interm points as well as intersecting cells
+      EnvNAVXYTHETALATCfg.ActionsV[tind][aind].intersectingcellsV.clear();
+      EnvNAVXYTHETALATCfg.ActionsV[tind][aind].intermptV.clear();
+      EnvNAVXYTHETALATCfg.ActionsV[tind][aind].interm3DcellsV.clear();
+      EnvNAVXYTHETALAT3Dcell_t previnterm3Dcell;
+      previnterm3Dcell.theta = previnterm3Dcell.x = previnterm3Dcell.y = 0;
+      for (int pind = 0; pind < (int)motionprimitiveV->at(aind).intermptV.size(); pind++)
+      {
+        EnvNAVXYTHETALAT3Dpt_t intermpt = motionprimitiveV->at(aind).intermptV[pind];
 		
-				//rotate it appropriately
-				double rotx = intermpt.x*cos(sourcepose.theta) - intermpt.y*sin(sourcepose.theta);
-				double roty = intermpt.x*sin(sourcepose.theta) + intermpt.y*cos(sourcepose.theta);
-				intermpt.x = rotx;
-				intermpt.y = roty;
-				intermpt.theta = normalizeAngle(sourcepose.theta + intermpt.theta);
+        //rotate it appropriately
+        double rotx = intermpt.x*cos(sourcepose.theta) - intermpt.y*sin(sourcepose.theta);
+        double roty = intermpt.x*sin(sourcepose.theta) + intermpt.y*cos(sourcepose.theta);
+        intermpt.x = rotx;
+        intermpt.y = roty;
+        intermpt.theta = normalizeAngle(sourcepose.theta + intermpt.theta);
 
-				//store it (they are with reference to 0,0,stattheta (not sourcepose.x,sourcepose.y,starttheta (that is, half-bin))
-				EnvNAVXYTHETALATCfg.ActionsV[tind][aind].intermptV.push_back(intermpt);
+        //store it (they are with reference to 0,0,stattheta (not sourcepose.x,sourcepose.y,starttheta (that is, half-bin))
+        EnvNAVXYTHETALATCfg.ActionsV[tind][aind].intermptV.push_back(intermpt);
 
-				//now compute the intersecting cells (for this pose has to be translated by sourcepose.x,sourcepose.y
-				EnvNAVXYTHETALAT3Dpt_t pose;
-				pose = intermpt;
-				pose.x += sourcepose.x;
-				pose.y += sourcepose.y;
-				CalculateFootprintForPose(pose, &EnvNAVXYTHETALATCfg.ActionsV[tind][aind].intersectingcellsV);
+        //now compute the intersecting cells (for this pose has to be translated by sourcepose.x,sourcepose.y
+        EnvNAVXYTHETALAT3Dpt_t pose;
+        pose = intermpt;
+        pose.x += sourcepose.x;
+        pose.y += sourcepose.y;
+        CalculateFootprintForPose(pose, &EnvNAVXYTHETALATCfg.ActionsV[tind][aind].intersectingcellsV);
 
-				//now also store the intermediate discretized cell if not there already
-				EnvNAVXYTHETALAT3Dcell_t interm3Dcell;
-				interm3Dcell.x = CONTXY2DISC(pose.x, EnvNAVXYTHETALATCfg.cellsize_m);
-				interm3Dcell.y = CONTXY2DISC(pose.y, EnvNAVXYTHETALATCfg.cellsize_m);
-				interm3Dcell.theta = ContTheta2Disc(pose.theta, NAVXYTHETALAT_THETADIRS); 
-				if(EnvNAVXYTHETALATCfg.ActionsV[tind][aind].interm3DcellsV.size() == 0 || 
-					previnterm3Dcell.theta != interm3Dcell.theta || previnterm3Dcell.x != interm3Dcell.x || previnterm3Dcell.y != interm3Dcell.y)
-				{
-					EnvNAVXYTHETALATCfg.ActionsV[tind][aind].interm3DcellsV.push_back(interm3Dcell);
-				}
-				previnterm3Dcell = interm3Dcell;
+        //now also store the intermediate discretized cell if not there already
+        EnvNAVXYTHETALAT3Dcell_t interm3Dcell;
+        interm3Dcell.x = CONTXY2DISC(pose.x, EnvNAVXYTHETALATCfg.cellsize_m);
+        interm3Dcell.y = CONTXY2DISC(pose.y, EnvNAVXYTHETALATCfg.cellsize_m);
+        interm3Dcell.theta = ContTheta2Disc(pose.theta, NAVXYTHETALAT_THETADIRS); 
+        if( EnvNAVXYTHETALATCfg.ActionsV[ tind ][ aind ].interm3DcellsV.size() == 0 || 
+            previnterm3Dcell.theta != interm3Dcell.theta ||
+            previnterm3Dcell.x != interm3Dcell.x ||
+            previnterm3Dcell.y != interm3Dcell.y )
+        {
+          EnvNAVXYTHETALATCfg.ActionsV[ tind ][ aind ].interm3DcellsV.push_back( interm3Dcell );
+        }
+        previnterm3Dcell = interm3Dcell;
+      }
 
-			}
-
-			//now remove the source footprint
-			RemoveSourceFootprint(sourcepose, &EnvNAVXYTHETALATCfg.ActionsV[tind][aind].intersectingcellsV);
+      //now remove the source footprint
+      RemoveSourceFootprint(sourcepose, &EnvNAVXYTHETALATCfg.ActionsV[tind][aind].intersectingcellsV);
 
 #if DEBUG
-			SBPL_FPRINTF(fDeb, "action tind=%d aind=%d: dX=%d dY=%d endtheta=%d (%.2f degs -> %.2f degs) cost=%d (mprim: %.2f %.2f %.2f)\n",
-				tind, aind, 			
-				EnvNAVXYTHETALATCfg.ActionsV[tind][aind].dX, EnvNAVXYTHETALATCfg.ActionsV[tind][aind].dY,
-				EnvNAVXYTHETALATCfg.ActionsV[tind][aind].endtheta, sourcepose.theta*180/PI_CONST, 
-				EnvNAVXYTHETALATCfg.ActionsV[tind][aind].intermptV[EnvNAVXYTHETALATCfg.ActionsV[tind][aind].intermptV.size()-1].theta*180/PI_CONST,	
-				EnvNAVXYTHETALATCfg.ActionsV[tind][aind].cost,
-				mp_endx_m, mp_endy_m, mp_endtheta_rad);
+      SBPL_FPRINTF(fDeb, "action tind=%d aind=%d: dX=%d dY=%d endtheta=%d (%.2f degs -> %.2f degs) cost=%d (mprim: %.2f %.2f %.2f)\n",
+                   tind, aind, 			
+                   EnvNAVXYTHETALATCfg.ActionsV[tind][aind].dX, EnvNAVXYTHETALATCfg.ActionsV[tind][aind].dY,
+                   EnvNAVXYTHETALATCfg.ActionsV[tind][aind].endtheta, sourcepose.theta*180/PI_CONST, 
+                   EnvNAVXYTHETALATCfg.ActionsV[tind][aind].intermptV[EnvNAVXYTHETALATCfg.ActionsV[tind][aind].intermptV.size()-1].theta*180/PI_CONST,	
+                   EnvNAVXYTHETALATCfg.ActionsV[tind][aind].cost,
+                   mp_endx_m, mp_endy_m, mp_endtheta_rad);
 #endif
 
-			//add to the list of backward actions
-			int targettheta = EnvNAVXYTHETALATCfg.ActionsV[tind][aind].endtheta;
-			if (targettheta < 0)
-				targettheta = targettheta + NAVXYTHETALAT_THETADIRS;
-			 EnvNAVXYTHETALATCfg.PredActionsV[targettheta].push_back(&(EnvNAVXYTHETALATCfg.ActionsV[tind][aind]));
+      //add to the list of backward actions
+      int targettheta = EnvNAVXYTHETALATCfg.ActionsV[tind][aind].endtheta;
+      if (targettheta < 0)
+      {
+        targettheta = targettheta + NAVXYTHETALAT_THETADIRS;
+      }
+      EnvNAVXYTHETALATCfg.PredActionsV[ targettheta ].push_back( &( EnvNAVXYTHETALATCfg.ActionsV[ tind ][ aind ]));
+    }
+  }
 
-		}
-	}
+  //set number of actions
+  EnvNAVXYTHETALATCfg.actionwidth = motionprimitiveV->size();
 
-	//set number of actions
-	EnvNAVXYTHETALATCfg.actionwidth = motionprimitiveV->size();
+  //now compute replanning data
+  ComputeReplanningData();
 
-
-	//now compute replanning data
-	ComputeReplanningData();
-
-	SBPL_PRINTF("done pre-computing action data based on motion primitives\n");
-
-
+  SBPL_PRINTF("done pre-computing action data based on motion primitives\n");
 }
 
-
 //here motionprimitivevector contains actions for all angles
-void EnvironmentNav3DCollisionsBase::PrecomputeActionswithCompleteMotionPrimitive(vector<SBPL_xytheta_mprimitive>* motionprimitiveV)
+void EnvironmentNav3DCollisionsBase::PrecomputeActionswithCompleteMotionPrimitive(
+  vector<SBPL_xytheta_mprimitive>* motionprimitiveV )
 {
   clock_t t0 = clock();
-	ROS_INFO("Pre-computing action data using motion primitives for every angle...");
-	EnvNAVXYTHETALATCfg.ActionsV = new EnvNAVXYTHETALATAction_t* [NAVXYTHETALAT_THETADIRS];
-	EnvNAVXYTHETALATCfg.PredActionsV = new vector<EnvNAVXYTHETALATAction_t*> [NAVXYTHETALAT_THETADIRS];
+  ROS_INFO("Pre-computing action data using motion primitives for every angle...");
+  EnvNAVXYTHETALATCfg.ActionsV = new EnvNAVXYTHETALATAction_t* [NAVXYTHETALAT_THETADIRS];
+  EnvNAVXYTHETALATCfg.PredActionsV = new vector<EnvNAVXYTHETALATAction_t*> [NAVXYTHETALAT_THETADIRS];
 
-	if(motionprimitiveV->size()%NAVXYTHETALAT_THETADIRS != 0)
-	{
-		SBPL_ERROR("ERROR: motionprimitives should be uniform across actions\n");
-		throw new SBPL_Exception();
-	}
+  if(motionprimitiveV->size()%NAVXYTHETALAT_THETADIRS != 0)
+  {
+    SBPL_ERROR("ERROR: motionprimitives should be uniform across actions\n");
+    throw new SBPL_Exception();
+  }
 
-	EnvNAVXYTHETALATCfg.actionwidth = ((int)motionprimitiveV->size())/NAVXYTHETALAT_THETADIRS;
+  EnvNAVXYTHETALATCfg.actionwidth = ((int)motionprimitiveV->size())/NAVXYTHETALAT_THETADIRS;
 
-	//iterate over source angles
-	int maxnumofactions = 0;
-	for(int tind = 0; tind < NAVXYTHETALAT_THETADIRS; tind++)
-	{
+  //iterate over source angles
+  int maxnumofactions = 0;
+  for(int tind = 0; tind < NAVXYTHETALAT_THETADIRS; tind++)
+  {
     clock_t t2 = clock();
-		SBPL_PRINTF("pre-computing for angle %d out of %d angles\n", tind, NAVXYTHETALAT_THETADIRS);
+    SBPL_PRINTF("pre-computing for angle %d out of %d angles\n", tind, NAVXYTHETALAT_THETADIRS);
 
-		EnvNAVXYTHETALATCfg.ActionsV[tind] = new EnvNAVXYTHETALATAction_t[EnvNAVXYTHETALATCfg.actionwidth];  
+    EnvNAVXYTHETALATCfg.ActionsV[tind] = new EnvNAVXYTHETALATAction_t[EnvNAVXYTHETALATCfg.actionwidth];  
 
-		//compute sourcepose
-		EnvNAVXYTHETALAT3Dpt_t sourcepose;
-		sourcepose.x = DISCXY2CONT(0, EnvNAVXYTHETALATCfg.cellsize_m);
-		sourcepose.y = DISCXY2CONT(0, EnvNAVXYTHETALATCfg.cellsize_m);
-		sourcepose.theta = DiscTheta2Cont(tind, NAVXYTHETALAT_THETADIRS);
+    //compute sourcepose
+    EnvNAVXYTHETALAT3Dpt_t sourcepose;
+    sourcepose.x = DISCXY2CONT(0, EnvNAVXYTHETALATCfg.cellsize_m);
+    sourcepose.y = DISCXY2CONT(0, EnvNAVXYTHETALATCfg.cellsize_m);
+    sourcepose.theta = DiscTheta2Cont(tind, NAVXYTHETALAT_THETADIRS);
 
-
-		//iterate over motion primitives
-		int numofactions = 0;
-		int aind = -1;
-		for(int mind = 0; mind < (int)motionprimitiveV->size(); mind++)
-		{
+    //iterate over motion primitives
+    int numofactions = 0;
+    int aind = -1;
+    for(int mind = 0; mind < (int)motionprimitiveV->size(); mind++)
+    {
       clock_t t3 = clock();
-			//find a motion primitive for this angle
-			if(motionprimitiveV->at(mind).starttheta_c != tind)
-				continue;
+      //find a motion primitive for this angle
+      if(motionprimitiveV->at(mind).starttheta_c != tind)
+        continue;
 			
-			aind++;
-			numofactions++;
+      aind++;
+      numofactions++;
 			
-			//action index
-			EnvNAVXYTHETALATCfg.ActionsV[tind][aind].aind = aind;
+      //action index
+      EnvNAVXYTHETALATCfg.ActionsV[tind][aind].aind = aind;
 
-			//start angle
-			EnvNAVXYTHETALATCfg.ActionsV[tind][aind].starttheta = tind;
+      //start angle
+      EnvNAVXYTHETALATCfg.ActionsV[tind][aind].starttheta = tind;
 
-			//compute dislocation
-			EnvNAVXYTHETALATCfg.ActionsV[tind][aind].endtheta = motionprimitiveV->at(mind).endcell.theta;
-			EnvNAVXYTHETALATCfg.ActionsV[tind][aind].dX = motionprimitiveV->at(mind).endcell.x;
-			EnvNAVXYTHETALATCfg.ActionsV[tind][aind].dY = motionprimitiveV->at(mind).endcell.y;
+      //compute dislocation
+      EnvNAVXYTHETALATCfg.ActionsV[tind][aind].endtheta = motionprimitiveV->at(mind).endcell.theta;
+      EnvNAVXYTHETALATCfg.ActionsV[tind][aind].dX = motionprimitiveV->at(mind).endcell.x;
+      EnvNAVXYTHETALATCfg.ActionsV[tind][aind].dY = motionprimitiveV->at(mind).endcell.y;
 
-			//compute cost
-			if(EnvNAVXYTHETALATCfg.ActionsV[tind][aind].dY != 0 || EnvNAVXYTHETALATCfg.ActionsV[tind][aind].dX != 0)
-				EnvNAVXYTHETALATCfg.ActionsV[tind][aind].cost = (int)(ceil(NAVXYTHETALAT_COSTMULT_MTOMM*EnvNAVXYTHETALATCfg.cellsize_m/EnvNAVXYTHETALATCfg.nominalvel_mpersecs*
-								sqrt((double)(EnvNAVXYTHETALATCfg.ActionsV[tind][aind].dX*EnvNAVXYTHETALATCfg.ActionsV[tind][aind].dX + 
-								EnvNAVXYTHETALATCfg.ActionsV[tind][aind].dY*EnvNAVXYTHETALATCfg.ActionsV[tind][aind].dY))));
-			else //cost of turn in place
-				EnvNAVXYTHETALATCfg.ActionsV[tind][aind].cost = (int)(NAVXYTHETALAT_COSTMULT_MTOMM*
-						EnvNAVXYTHETALATCfg.timetoturn45degsinplace_secs*
-						fabs(computeMinUnsignedAngleDiff(DiscTheta2Cont(EnvNAVXYTHETALATCfg.ActionsV[tind][aind].endtheta, NAVXYTHETALAT_THETADIRS),
-														DiscTheta2Cont(EnvNAVXYTHETALATCfg.ActionsV[tind][aind].starttheta, NAVXYTHETALAT_THETADIRS)))/(PI_CONST/4.0));
-			//use any additional cost multiplier
-			EnvNAVXYTHETALATCfg.ActionsV[tind][aind].cost *= motionprimitiveV->at(mind).additionalactioncostmult;
+      //compute cost
+      if(EnvNAVXYTHETALATCfg.ActionsV[tind][aind].dY != 0 || EnvNAVXYTHETALATCfg.ActionsV[tind][aind].dX != 0)
+      {
+        EnvNAVXYTHETALATCfg.ActionsV[ tind ][ aind ].cost =
+          (int)( ceil( NAVXYTHETALAT_COSTMULT_MTOMM *
+                       EnvNAVXYTHETALATCfg.cellsize_m /
+                       EnvNAVXYTHETALATCfg.nominalvel_mpersecs *
+                       sqrt( (double)( EnvNAVXYTHETALATCfg.ActionsV[tind][aind].dX *
+                                       EnvNAVXYTHETALATCfg.ActionsV[tind][aind].dX +
+                                       EnvNAVXYTHETALATCfg.ActionsV[tind][aind].dY *
+                                       EnvNAVXYTHETALATCfg.ActionsV[tind][aind].dY ))));
+      }
+      else //cost of turn in place
+      {
+        EnvNAVXYTHETALATCfg.ActionsV[tind][aind].cost =
+          (int)( NAVXYTHETALAT_COSTMULT_MTOMM *
+                 EnvNAVXYTHETALATCfg.timetoturn45degsinplace_secs *
+                 fabs( computeMinUnsignedAngleDiff(
+                         DiscTheta2Cont( EnvNAVXYTHETALATCfg.ActionsV[ tind ][ aind ].endtheta,
+                                         NAVXYTHETALAT_THETADIRS ),
+                         DiscTheta2Cont( EnvNAVXYTHETALATCfg.ActionsV[ tind ][ aind ].starttheta,
+                                         NAVXYTHETALAT_THETADIRS ))) /
+                 ( PI_CONST/4.0 ));
+      }
+      //use any additional cost multiplier
+      EnvNAVXYTHETALATCfg.ActionsV[tind][aind].cost *= motionprimitiveV->at(mind).additionalactioncostmult;
 
-			//compute and store interm points as well as intersecting cells
-			EnvNAVXYTHETALATCfg.ActionsV[tind][aind].intersectingcellsV.clear();
-			EnvNAVXYTHETALATCfg.ActionsV[tind][aind].intermptV.clear();
-			EnvNAVXYTHETALATCfg.ActionsV[tind][aind].interm3DcellsV.clear();
-			EnvNAVXYTHETALAT3Dcell_t previnterm3Dcell;
-			previnterm3Dcell.theta = 0; previnterm3Dcell.x = 0; previnterm3Dcell.y = 0;			
+      //compute and store interm points as well as intersecting cells
+      EnvNAVXYTHETALATCfg.ActionsV[tind][aind].intersectingcellsV.clear();
+      EnvNAVXYTHETALATCfg.ActionsV[tind][aind].intermptV.clear();
+      EnvNAVXYTHETALATCfg.ActionsV[tind][aind].interm3DcellsV.clear();
+      EnvNAVXYTHETALAT3Dcell_t previnterm3Dcell;
+      previnterm3Dcell.theta = 0; previnterm3Dcell.x = 0; previnterm3Dcell.y = 0;			
       set<pair<int,int> > cell_set;
       clock_t foot_time = 0;
       clock_t t4 = clock();
-			for (int pind = 0; pind < (int)motionprimitiveV->at(mind).intermptV.size(); pind++)
-			{
-				EnvNAVXYTHETALAT3Dpt_t intermpt = motionprimitiveV->at(mind).intermptV[pind];
+      for (int pind = 0; pind < (int)motionprimitiveV->at(mind).intermptV.size(); pind++)
+      {
+        EnvNAVXYTHETALAT3Dpt_t intermpt = motionprimitiveV->at(mind).intermptV[pind];
 		
-				//store it (they are with reference to 0,0,stattheta (not sourcepose.x,sourcepose.y,starttheta (that is, half-bin))
-				EnvNAVXYTHETALATCfg.ActionsV[tind][aind].intermptV.push_back(intermpt);
+        // store it (they are with reference to 0,0,stattheta (not
+        // sourcepose.x,sourcepose.y,starttheta (that is, half-bin))
+        EnvNAVXYTHETALATCfg.ActionsV[tind][aind].intermptV.push_back(intermpt);
 
-				//now compute the intersecting cells (for this pose has to be translated by sourcepose.x,sourcepose.y
-				EnvNAVXYTHETALAT3Dpt_t pose;
-				pose = intermpt;
-				pose.x += sourcepose.x;
-				pose.y += sourcepose.y;
+        // now compute the intersecting cells (for this pose has to be
+        // translated by sourcepose.x,sourcepose.y
+        EnvNAVXYTHETALAT3Dpt_t pose;
+        pose = intermpt;
+        pose.x += sourcepose.x;
+        pose.y += sourcepose.y;
         clock_t t6 = clock();
-				//CalculateFootprintForPose(pose, &EnvNAVXYTHETALATCfg.ActionsV[tind][aind].intersectingcellsV);
+        //CalculateFootprintForPose(pose, &EnvNAVXYTHETALATCfg.ActionsV[tind][aind].intersectingcellsV);
         printFP = false;//tind==0 && aind==0;
         //printf("before cell_set size %d\n",cell_set.size());
-				CalculateFootprintForPose(pose, &cell_set);
+        CalculateFootprintForPose(pose, &cell_set);
         //printf("after cell_set size %d\n",cell_set.size());
         printFP = false;
         clock_t t7 = clock();
         //printf("calc footprint took %f\n", ((double)(t7-t6))/CLOCKS_PER_SEC);
         foot_time += t7-t6;
 			
-				//now also store the intermediate discretized cell if not there already
-				EnvNAVXYTHETALAT3Dcell_t interm3Dcell;
-				interm3Dcell.x = CONTXY2DISC(pose.x, EnvNAVXYTHETALATCfg.cellsize_m);
-				interm3Dcell.y = CONTXY2DISC(pose.y, EnvNAVXYTHETALATCfg.cellsize_m);
-				interm3Dcell.theta = ContTheta2Disc(pose.theta, NAVXYTHETALAT_THETADIRS); 
-				if(EnvNAVXYTHETALATCfg.ActionsV[tind][aind].interm3DcellsV.size() == 0 || 
-					previnterm3Dcell.theta != interm3Dcell.theta || previnterm3Dcell.x != interm3Dcell.x || previnterm3Dcell.y != interm3Dcell.y)
-				{
-					EnvNAVXYTHETALATCfg.ActionsV[tind][aind].interm3DcellsV.push_back(interm3Dcell);
-				}
-				previnterm3Dcell = interm3Dcell;
-			}
+        //now also store the intermediate discretized cell if not there already
+        EnvNAVXYTHETALAT3Dcell_t interm3Dcell;
+        interm3Dcell.x = CONTXY2DISC(pose.x, EnvNAVXYTHETALATCfg.cellsize_m);
+        interm3Dcell.y = CONTXY2DISC(pose.y, EnvNAVXYTHETALATCfg.cellsize_m);
+        interm3Dcell.theta = ContTheta2Disc(pose.theta, NAVXYTHETALAT_THETADIRS); 
+        if( EnvNAVXYTHETALATCfg.ActionsV[tind][aind].interm3DcellsV.size() == 0 || 
+            previnterm3Dcell.theta != interm3Dcell.theta ||
+            previnterm3Dcell.x != interm3Dcell.x ||
+            previnterm3Dcell.y != interm3Dcell.y )
+        {
+          EnvNAVXYTHETALATCfg.ActionsV[ tind ][ aind ].interm3DcellsV.push_back( interm3Dcell );
+        }
+        previnterm3Dcell = interm3Dcell;
+      }
 
       EnvNAVXYTHETALATCfg.ActionsV[tind][aind].intersectingcellsV.reserve(cell_set.size());
-      for(set<pair<int,int> >::iterator it = cell_set.begin(); it!=cell_set.end(); it++){
+      for(set<pair<int,int> >::iterator it = cell_set.begin(); it!=cell_set.end(); it++)
+      {
         sbpl_2Dcell_t cell;
         cell.x = it->first;
         cell.y = it->second;
-        EnvNAVXYTHETALATCfg.ActionsV[tind][aind].intersectingcellsV.push_back(cell);
+        EnvNAVXYTHETALATCfg.ActionsV[tind][aind].intersectingcellsV.push_back( cell );
       }
       //printf("num cells %d\n",EnvNAVXYTHETALATCfg.ActionsV[tind][aind].intersectingcellsV.size());
 
       //printf("foot time took %f\n", ((double)(foot_time))/CLOCKS_PER_SEC);
       //printf("interm points took %f\n", ((double)(clock()-t4))/CLOCKS_PER_SEC);
 
-			//now remove the source footprint
+      //now remove the source footprint
       clock_t t5 = clock();
 
       //printf("before remove source %d\n",EnvNAVXYTHETALATCfg.ActionsV[tind][aind].intersectingcellsV.size());
-			RemoveSourceFootprint(sourcepose, &EnvNAVXYTHETALATCfg.ActionsV[tind][aind].intersectingcellsV);
+      RemoveSourceFootprint( sourcepose, &EnvNAVXYTHETALATCfg.ActionsV[ tind ][ aind ].intersectingcellsV );
       //printf("after remove source %d\n",EnvNAVXYTHETALATCfg.ActionsV[tind][aind].intersectingcellsV.size());
       //printf("remove footprint took %f\n", ((double)(clock()-t5))/CLOCKS_PER_SEC);
 
 #if DEBUG
-			SBPL_FPRINTF(fDeb, "action tind=%d aind=%d: dX=%d dY=%d endtheta=%d (%.2f degs -> %.2f degs) cost=%d (mprimID %d: %d %d %d) numofintermcells = %d numofintercells=%d\n",
-				tind, aind, 			
-				EnvNAVXYTHETALATCfg.ActionsV[tind][aind].dX, EnvNAVXYTHETALATCfg.ActionsV[tind][aind].dY,
-				EnvNAVXYTHETALATCfg.ActionsV[tind][aind].endtheta, 
-				EnvNAVXYTHETALATCfg.ActionsV[tind][aind].intermptV[0].theta*180/PI_CONST, 
-				EnvNAVXYTHETALATCfg.ActionsV[tind][aind].intermptV[EnvNAVXYTHETALATCfg.ActionsV[tind][aind].intermptV.size()-1].theta*180/PI_CONST,	
-				EnvNAVXYTHETALATCfg.ActionsV[tind][aind].cost,
-				motionprimitiveV->at(mind).motprimID, 
-				motionprimitiveV->at(mind).endcell.x, motionprimitiveV->at(mind).endcell.y, motionprimitiveV->at(mind).endcell.theta,
-				EnvNAVXYTHETALATCfg.ActionsV[tind][aind].interm3DcellsV.size(),
-				EnvNAVXYTHETALATCfg.ActionsV[tind][aind].intersectingcellsV.size()); 
+      SBPL_FPRINTF(fDeb, "action tind=%d aind=%d: dX=%d dY=%d endtheta=%d (%.2f degs -> %.2f degs) cost=%d (mprimID %d: %d %d %d) numofintermcells = %d numofintercells=%d\n",
+                   tind, aind, 			
+                   EnvNAVXYTHETALATCfg.ActionsV[tind][aind].dX, EnvNAVXYTHETALATCfg.ActionsV[tind][aind].dY,
+                   EnvNAVXYTHETALATCfg.ActionsV[tind][aind].endtheta, 
+                   EnvNAVXYTHETALATCfg.ActionsV[tind][aind].intermptV[0].theta*180/PI_CONST, 
+                   EnvNAVXYTHETALATCfg.ActionsV[tind][aind].intermptV[EnvNAVXYTHETALATCfg.ActionsV[tind][aind].intermptV.size()-1].theta*180/PI_CONST,	
+                   EnvNAVXYTHETALATCfg.ActionsV[tind][aind].cost,
+                   motionprimitiveV->at(mind).motprimID, 
+                   motionprimitiveV->at(mind).endcell.x, motionprimitiveV->at(mind).endcell.y, motionprimitiveV->at(mind).endcell.theta,
+                   EnvNAVXYTHETALATCfg.ActionsV[tind][aind].interm3DcellsV.size(),
+                   EnvNAVXYTHETALATCfg.ActionsV[tind][aind].intersectingcellsV.size()); 
 #endif
 
-			//add to the list of backward actions
-			int targettheta = EnvNAVXYTHETALATCfg.ActionsV[tind][aind].endtheta;
-			if (targettheta < 0)
-				targettheta = targettheta + NAVXYTHETALAT_THETADIRS;
-			 EnvNAVXYTHETALATCfg.PredActionsV[targettheta].push_back(&(EnvNAVXYTHETALATCfg.ActionsV[tind][aind]));
+      //add to the list of backward actions
+      int targettheta = EnvNAVXYTHETALATCfg.ActionsV[tind][aind].endtheta;
+      if (targettheta < 0)
+      {
+        targettheta = targettheta + NAVXYTHETALAT_THETADIRS;
+      }
+      EnvNAVXYTHETALATCfg.PredActionsV[targettheta].push_back( &( EnvNAVXYTHETALATCfg.ActionsV[ tind ][ aind ]));
 
       //printf("motion %d took %f\n",mind, ((double)(clock()-t3))/CLOCKS_PER_SEC);
-		}
+    }
 
-		if(maxnumofactions < numofactions)
-			maxnumofactions = numofactions;
+    if(maxnumofactions < numofactions)
+    {
+      maxnumofactions = numofactions;
+    }
     printf("theta %d took %f\n",tind, ((double)(clock()-t2))/CLOCKS_PER_SEC);
-	}
+  }
 
+  //at this point we don't allow nonuniform number of actions
+  if( motionprimitiveV->size() != (size_t)( NAVXYTHETALAT_THETADIRS * maxnumofactions ))
+  {
+    SBPL_ERROR("ERROR: nonuniform number of actions is not supported (maxnumofactions=%d while motprims=%d thetas=%d\n",
+               maxnumofactions, (unsigned int)motionprimitiveV->size(), NAVXYTHETALAT_THETADIRS);
+    throw new SBPL_Exception();
+  }
 
-
-	//at this point we don't allow nonuniform number of actions
-	if(motionprimitiveV->size() != (size_t)(NAVXYTHETALAT_THETADIRS*maxnumofactions))
-	{
-		SBPL_ERROR("ERROR: nonuniform number of actions is not supported (maxnumofactions=%d while motprims=%d thetas=%d\n",
-				maxnumofactions, (unsigned int)motionprimitiveV->size(), NAVXYTHETALAT_THETADIRS);
-		throw new SBPL_Exception();
-	}
-
-	//now compute replanning data
+  //now compute replanning data
   clock_t t1 = clock();
-	ComputeReplanningData();
+  ComputeReplanningData();
   printf("replanning data %f\n",((double)(clock()-t1))/CLOCKS_PER_SEC);
 
-	SBPL_PRINTF("done pre-computing action data based on motion primitives\n");
-
+  SBPL_PRINTF("done pre-computing action data based on motion primitives\n");
 
   printf("total pre-computing actions %f\n",((double)(clock()-t0))/CLOCKS_PER_SEC);
 }
 
 void EnvironmentNav3DCollisionsBase::PrecomputeActions()
 {
+  //construct list of actions
+  ROS_WARN("Pre-computing action data (NOT using motion primitives)...");
+  EnvNAVXYTHETALATCfg.ActionsV = new EnvNAVXYTHETALATAction_t* [NAVXYTHETALAT_THETADIRS];
+  EnvNAVXYTHETALATCfg.PredActionsV = new vector<EnvNAVXYTHETALATAction_t*> [NAVXYTHETALAT_THETADIRS];
+  vector<sbpl_2Dcell_t> footprint;
+  //iterate over source angles
+  for(int tind = 0; tind < NAVXYTHETALAT_THETADIRS; tind++)
+  {
+    SBPL_PRINTF("processing angle %d\n", tind);
+    EnvNAVXYTHETALATCfg.ActionsV[tind] = new EnvNAVXYTHETALATAction_t[EnvNAVXYTHETALATCfg.actionwidth];
 
-	//construct list of actions
-	ROS_WARN("Pre-computing action data (NOT using motion primitives)...");
-	EnvNAVXYTHETALATCfg.ActionsV = new EnvNAVXYTHETALATAction_t* [NAVXYTHETALAT_THETADIRS];
-	EnvNAVXYTHETALATCfg.PredActionsV = new vector<EnvNAVXYTHETALATAction_t*> [NAVXYTHETALAT_THETADIRS];
-	vector<sbpl_2Dcell_t> footprint;
-	//iterate over source angles
-	for(int tind = 0; tind < NAVXYTHETALAT_THETADIRS; tind++)
-	{
-		SBPL_PRINTF("processing angle %d\n", tind);
-		EnvNAVXYTHETALATCfg.ActionsV[tind] = new EnvNAVXYTHETALATAction_t[EnvNAVXYTHETALATCfg.actionwidth];
+    //compute sourcepose
+    EnvNAVXYTHETALAT3Dpt_t sourcepose;
+    sourcepose.x = DISCXY2CONT(0, EnvNAVXYTHETALATCfg.cellsize_m);
+    sourcepose.y = DISCXY2CONT(0, EnvNAVXYTHETALATCfg.cellsize_m);
+    sourcepose.theta = DiscTheta2Cont(tind, NAVXYTHETALAT_THETADIRS);
 
-		//compute sourcepose
-		EnvNAVXYTHETALAT3Dpt_t sourcepose;
-		sourcepose.x = DISCXY2CONT(0, EnvNAVXYTHETALATCfg.cellsize_m);
-		sourcepose.y = DISCXY2CONT(0, EnvNAVXYTHETALATCfg.cellsize_m);
-		sourcepose.theta = DiscTheta2Cont(tind, NAVXYTHETALAT_THETADIRS);
+    //the construction assumes that the robot first turns and then goes along this new theta
+    int aind = 0;
+    for(; aind < 3; aind++)
+    {
+      EnvNAVXYTHETALATCfg.ActionsV[tind][aind].aind = aind;
+      EnvNAVXYTHETALATCfg.ActionsV[tind][aind].starttheta = tind;
+      EnvNAVXYTHETALATCfg.ActionsV[tind][aind].endtheta = (tind + aind - 1)%NAVXYTHETALAT_THETADIRS; //-1,0,1
+      double angle = DiscTheta2Cont(EnvNAVXYTHETALATCfg.ActionsV[tind][aind].endtheta, NAVXYTHETALAT_THETADIRS);
+      EnvNAVXYTHETALATCfg.ActionsV[tind][aind].dX = (int)(cos(angle) + 0.5*(cos(angle)>0?1:-1));
+      EnvNAVXYTHETALATCfg.ActionsV[tind][aind].dY = (int)(sin(angle) + 0.5*(sin(angle)>0?1:-1));
+      EnvNAVXYTHETALATCfg.ActionsV[tind][aind].cost =
+        (int)( ceil( NAVXYTHETALAT_COSTMULT_MTOMM *
+                     EnvNAVXYTHETALATCfg.cellsize_m /
+                     EnvNAVXYTHETALATCfg.nominalvel_mpersecs *
+                     sqrt( (double)( EnvNAVXYTHETALATCfg.ActionsV[tind][aind].dX *
+                                     EnvNAVXYTHETALATCfg.ActionsV[tind][aind].dX + 
+                                     EnvNAVXYTHETALATCfg.ActionsV[tind][aind].dY *
+                                     EnvNAVXYTHETALATCfg.ActionsV[tind][aind].dY ))));
 
-		//the construction assumes that the robot first turns and then goes along this new theta
-		int aind = 0;
-		for(; aind < 3; aind++)
-		{
-			EnvNAVXYTHETALATCfg.ActionsV[tind][aind].aind = aind;
-			EnvNAVXYTHETALATCfg.ActionsV[tind][aind].starttheta = tind;
-			EnvNAVXYTHETALATCfg.ActionsV[tind][aind].endtheta = (tind + aind - 1)%NAVXYTHETALAT_THETADIRS; //-1,0,1
-			double angle = DiscTheta2Cont(EnvNAVXYTHETALATCfg.ActionsV[tind][aind].endtheta, NAVXYTHETALAT_THETADIRS);
-			EnvNAVXYTHETALATCfg.ActionsV[tind][aind].dX = (int)(cos(angle) + 0.5*(cos(angle)>0?1:-1));
-			EnvNAVXYTHETALATCfg.ActionsV[tind][aind].dY = (int)(sin(angle) + 0.5*(sin(angle)>0?1:-1));
-			EnvNAVXYTHETALATCfg.ActionsV[tind][aind].cost = (int)(ceil(NAVXYTHETALAT_COSTMULT_MTOMM*EnvNAVXYTHETALATCfg.cellsize_m/EnvNAVXYTHETALATCfg.nominalvel_mpersecs*sqrt((double)(EnvNAVXYTHETALATCfg.ActionsV[tind][aind].dX*EnvNAVXYTHETALATCfg.ActionsV[tind][aind].dX + 
-					EnvNAVXYTHETALATCfg.ActionsV[tind][aind].dY*EnvNAVXYTHETALATCfg.ActionsV[tind][aind].dY))));
-
-			//compute intersecting cells
-			EnvNAVXYTHETALAT3Dpt_t pose;
-			pose.x = DISCXY2CONT(EnvNAVXYTHETALATCfg.ActionsV[tind][aind].dX, EnvNAVXYTHETALATCfg.cellsize_m);
-			pose.y = DISCXY2CONT(EnvNAVXYTHETALATCfg.ActionsV[tind][aind].dY, EnvNAVXYTHETALATCfg.cellsize_m);
-			pose.theta = angle;
-			EnvNAVXYTHETALATCfg.ActionsV[tind][aind].intermptV.clear();
-			EnvNAVXYTHETALATCfg.ActionsV[tind][aind].intersectingcellsV.clear();
-			CalculateFootprintForPose(pose, &EnvNAVXYTHETALATCfg.ActionsV[tind][aind].intersectingcellsV);
-			RemoveSourceFootprint(sourcepose, &EnvNAVXYTHETALATCfg.ActionsV[tind][aind].intersectingcellsV);
-
-#if DEBUG
-			SBPL_PRINTF("action tind=%d aind=%d: endtheta=%d (%f) dX=%d dY=%d cost=%d\n",
-				tind, aind, EnvNAVXYTHETALATCfg.ActionsV[tind][aind].endtheta, angle, 
-				EnvNAVXYTHETALATCfg.ActionsV[tind][aind].dX, EnvNAVXYTHETALATCfg.ActionsV[tind][aind].dY,
-				EnvNAVXYTHETALATCfg.ActionsV[tind][aind].cost);
-#endif
-
-			//add to the list of backward actions
-			int targettheta = EnvNAVXYTHETALATCfg.ActionsV[tind][aind].endtheta;
-			if (targettheta < 0)
-				targettheta = targettheta + NAVXYTHETALAT_THETADIRS;
-			 EnvNAVXYTHETALATCfg.PredActionsV[targettheta].push_back(&(EnvNAVXYTHETALATCfg.ActionsV[tind][aind]));
-
-		}
-
-		//decrease and increase angle without movement
-		aind = 3;
-		EnvNAVXYTHETALATCfg.ActionsV[tind][aind].aind = aind;
-		EnvNAVXYTHETALATCfg.ActionsV[tind][aind].starttheta = tind;
-		EnvNAVXYTHETALATCfg.ActionsV[tind][aind].endtheta = tind-1;
-		if(EnvNAVXYTHETALATCfg.ActionsV[tind][aind].endtheta < 0) EnvNAVXYTHETALATCfg.ActionsV[tind][aind].endtheta += NAVXYTHETALAT_THETADIRS;
-		EnvNAVXYTHETALATCfg.ActionsV[tind][aind].dX = 0;
-		EnvNAVXYTHETALATCfg.ActionsV[tind][aind].dY = 0;
-		EnvNAVXYTHETALATCfg.ActionsV[tind][aind].cost = (int)(NAVXYTHETALAT_COSTMULT_MTOMM*EnvNAVXYTHETALATCfg.timetoturn45degsinplace_secs);
-
-		//compute intersecting cells
-		EnvNAVXYTHETALAT3Dpt_t pose;
-		pose.x = DISCXY2CONT(EnvNAVXYTHETALATCfg.ActionsV[tind][aind].dX, EnvNAVXYTHETALATCfg.cellsize_m);
-		pose.y = DISCXY2CONT(EnvNAVXYTHETALATCfg.ActionsV[tind][aind].dY, EnvNAVXYTHETALATCfg.cellsize_m);
-		pose.theta = DiscTheta2Cont(EnvNAVXYTHETALATCfg.ActionsV[tind][aind].endtheta, NAVXYTHETALAT_THETADIRS);
-		EnvNAVXYTHETALATCfg.ActionsV[tind][aind].intermptV.clear();
-		EnvNAVXYTHETALATCfg.ActionsV[tind][aind].intersectingcellsV.clear();
-		CalculateFootprintForPose(pose, &EnvNAVXYTHETALATCfg.ActionsV[tind][aind].intersectingcellsV);
-		RemoveSourceFootprint(sourcepose, &EnvNAVXYTHETALATCfg.ActionsV[tind][aind].intersectingcellsV);
+      //compute intersecting cells
+      EnvNAVXYTHETALAT3Dpt_t pose;
+      pose.x = DISCXY2CONT(EnvNAVXYTHETALATCfg.ActionsV[tind][aind].dX, EnvNAVXYTHETALATCfg.cellsize_m);
+      pose.y = DISCXY2CONT(EnvNAVXYTHETALATCfg.ActionsV[tind][aind].dY, EnvNAVXYTHETALATCfg.cellsize_m);
+      pose.theta = angle;
+      EnvNAVXYTHETALATCfg.ActionsV[tind][aind].intermptV.clear();
+      EnvNAVXYTHETALATCfg.ActionsV[tind][aind].intersectingcellsV.clear();
+      CalculateFootprintForPose(pose, &EnvNAVXYTHETALATCfg.ActionsV[tind][aind].intersectingcellsV);
+      RemoveSourceFootprint(sourcepose, &EnvNAVXYTHETALATCfg.ActionsV[tind][aind].intersectingcellsV);
 
 #if DEBUG
-		SBPL_PRINTF("action tind=%d aind=%d: endtheta=%d (%f) dX=%d dY=%d cost=%d\n",
-			tind, aind, EnvNAVXYTHETALATCfg.ActionsV[tind][aind].endtheta, DiscTheta2Cont(EnvNAVXYTHETALATCfg.ActionsV[tind][aind].endtheta, NAVXYTHETALAT_THETADIRS),
-			EnvNAVXYTHETALATCfg.ActionsV[tind][aind].dX, EnvNAVXYTHETALATCfg.ActionsV[tind][aind].dY,
-			EnvNAVXYTHETALATCfg.ActionsV[tind][aind].cost);
+      SBPL_PRINTF("action tind=%d aind=%d: endtheta=%d (%f) dX=%d dY=%d cost=%d\n",
+                  tind, aind, EnvNAVXYTHETALATCfg.ActionsV[tind][aind].endtheta, angle, 
+                  EnvNAVXYTHETALATCfg.ActionsV[tind][aind].dX, EnvNAVXYTHETALATCfg.ActionsV[tind][aind].dY,
+                  EnvNAVXYTHETALATCfg.ActionsV[tind][aind].cost);
 #endif
 
-		//add to the list of backward actions
-		int targettheta = EnvNAVXYTHETALATCfg.ActionsV[tind][aind].endtheta;
-		if (targettheta < 0)
-			targettheta = targettheta + NAVXYTHETALAT_THETADIRS;
-		 EnvNAVXYTHETALATCfg.PredActionsV[targettheta].push_back(&(EnvNAVXYTHETALATCfg.ActionsV[tind][aind]));
+      //add to the list of backward actions
+      int targettheta = EnvNAVXYTHETALATCfg.ActionsV[tind][aind].endtheta;
+      if (targettheta < 0)
+      {
+        targettheta = targettheta + NAVXYTHETALAT_THETADIRS;
+      }
+      EnvNAVXYTHETALATCfg.PredActionsV[targettheta].push_back(&(EnvNAVXYTHETALATCfg.ActionsV[tind][aind]));
+    }
 
+    //decrease and increase angle without movement
+    aind = 3;
+    EnvNAVXYTHETALATCfg.ActionsV[tind][aind].aind = aind;
+    EnvNAVXYTHETALATCfg.ActionsV[tind][aind].starttheta = tind;
+    EnvNAVXYTHETALATCfg.ActionsV[tind][aind].endtheta = tind-1;
+    if(EnvNAVXYTHETALATCfg.ActionsV[tind][aind].endtheta < 0) EnvNAVXYTHETALATCfg.ActionsV[tind][aind].endtheta += NAVXYTHETALAT_THETADIRS;
+    EnvNAVXYTHETALATCfg.ActionsV[tind][aind].dX = 0;
+    EnvNAVXYTHETALATCfg.ActionsV[tind][aind].dY = 0;
+    EnvNAVXYTHETALATCfg.ActionsV[tind][aind].cost = (int)(NAVXYTHETALAT_COSTMULT_MTOMM*EnvNAVXYTHETALATCfg.timetoturn45degsinplace_secs);
 
-		aind = 4;
-		EnvNAVXYTHETALATCfg.ActionsV[tind][aind].aind = aind;
-		EnvNAVXYTHETALATCfg.ActionsV[tind][aind].starttheta = tind;
-		EnvNAVXYTHETALATCfg.ActionsV[tind][aind].endtheta = (tind + 1)%NAVXYTHETALAT_THETADIRS; 
-		EnvNAVXYTHETALATCfg.ActionsV[tind][aind].dX = 0;
-		EnvNAVXYTHETALATCfg.ActionsV[tind][aind].dY = 0;
-		EnvNAVXYTHETALATCfg.ActionsV[tind][aind].cost = (int)(NAVXYTHETALAT_COSTMULT_MTOMM*EnvNAVXYTHETALATCfg.timetoturn45degsinplace_secs);
-
-		//compute intersecting cells
-		pose.x = DISCXY2CONT(EnvNAVXYTHETALATCfg.ActionsV[tind][aind].dX, EnvNAVXYTHETALATCfg.cellsize_m);
-		pose.y = DISCXY2CONT(EnvNAVXYTHETALATCfg.ActionsV[tind][aind].dY, EnvNAVXYTHETALATCfg.cellsize_m);
-		pose.theta = DiscTheta2Cont(EnvNAVXYTHETALATCfg.ActionsV[tind][aind].endtheta, NAVXYTHETALAT_THETADIRS);
-		EnvNAVXYTHETALATCfg.ActionsV[tind][aind].intermptV.clear();
-		EnvNAVXYTHETALATCfg.ActionsV[tind][aind].intersectingcellsV.clear();
-		CalculateFootprintForPose(pose, &EnvNAVXYTHETALATCfg.ActionsV[tind][aind].intersectingcellsV);
-		RemoveSourceFootprint(sourcepose, &EnvNAVXYTHETALATCfg.ActionsV[tind][aind].intersectingcellsV);
-
+    //compute intersecting cells
+    EnvNAVXYTHETALAT3Dpt_t pose;
+    pose.x = DISCXY2CONT(EnvNAVXYTHETALATCfg.ActionsV[tind][aind].dX, EnvNAVXYTHETALATCfg.cellsize_m);
+    pose.y = DISCXY2CONT(EnvNAVXYTHETALATCfg.ActionsV[tind][aind].dY, EnvNAVXYTHETALATCfg.cellsize_m);
+    pose.theta = DiscTheta2Cont(EnvNAVXYTHETALATCfg.ActionsV[tind][aind].endtheta, NAVXYTHETALAT_THETADIRS);
+    EnvNAVXYTHETALATCfg.ActionsV[tind][aind].intermptV.clear();
+    EnvNAVXYTHETALATCfg.ActionsV[tind][aind].intersectingcellsV.clear();
+    CalculateFootprintForPose(pose, &EnvNAVXYTHETALATCfg.ActionsV[tind][aind].intersectingcellsV);
+    RemoveSourceFootprint(sourcepose, &EnvNAVXYTHETALATCfg.ActionsV[tind][aind].intersectingcellsV);
 
 #if DEBUG
-		SBPL_PRINTF("action tind=%d aind=%d: endtheta=%d (%f) dX=%d dY=%d cost=%d\n",
-			tind, aind, EnvNAVXYTHETALATCfg.ActionsV[tind][aind].endtheta, DiscTheta2Cont(EnvNAVXYTHETALATCfg.ActionsV[tind][aind].endtheta, NAVXYTHETALAT_THETADIRS),
-			EnvNAVXYTHETALATCfg.ActionsV[tind][aind].dX, EnvNAVXYTHETALATCfg.ActionsV[tind][aind].dY,
-			EnvNAVXYTHETALATCfg.ActionsV[tind][aind].cost);
+    SBPL_PRINTF("action tind=%d aind=%d: endtheta=%d (%f) dX=%d dY=%d cost=%d\n",
+                tind, aind, EnvNAVXYTHETALATCfg.ActionsV[tind][aind].endtheta, DiscTheta2Cont(EnvNAVXYTHETALATCfg.ActionsV[tind][aind].endtheta, NAVXYTHETALAT_THETADIRS),
+                EnvNAVXYTHETALATCfg.ActionsV[tind][aind].dX, EnvNAVXYTHETALATCfg.ActionsV[tind][aind].dY,
+                EnvNAVXYTHETALATCfg.ActionsV[tind][aind].cost);
 #endif
 
-		//add to the list of backward actions
-		targettheta = EnvNAVXYTHETALATCfg.ActionsV[tind][aind].endtheta;
-		if (targettheta < 0)
-			targettheta = targettheta + NAVXYTHETALAT_THETADIRS;
-		 EnvNAVXYTHETALATCfg.PredActionsV[targettheta].push_back(&(EnvNAVXYTHETALATCfg.ActionsV[tind][aind]));
+    //add to the list of backward actions
+    int targettheta = EnvNAVXYTHETALATCfg.ActionsV[tind][aind].endtheta;
+    if (targettheta < 0)
+    {
+      targettheta = targettheta + NAVXYTHETALAT_THETADIRS;
+    }
+    EnvNAVXYTHETALATCfg.PredActionsV[targettheta].push_back(&(EnvNAVXYTHETALATCfg.ActionsV[tind][aind]));
 
-	}
+    aind = 4;
+    EnvNAVXYTHETALATCfg.ActionsV[tind][aind].aind = aind;
+    EnvNAVXYTHETALATCfg.ActionsV[tind][aind].starttheta = tind;
+    EnvNAVXYTHETALATCfg.ActionsV[tind][aind].endtheta = (tind + 1)%NAVXYTHETALAT_THETADIRS; 
+    EnvNAVXYTHETALATCfg.ActionsV[tind][aind].dX = 0;
+    EnvNAVXYTHETALATCfg.ActionsV[tind][aind].dY = 0;
+    EnvNAVXYTHETALATCfg.ActionsV[tind][aind].cost =
+      (int)( NAVXYTHETALAT_COSTMULT_MTOMM *
+             EnvNAVXYTHETALATCfg.timetoturn45degsinplace_secs );
 
-	//now compute replanning data
-	ComputeReplanningData();
+    //compute intersecting cells
+    pose.x = DISCXY2CONT(EnvNAVXYTHETALATCfg.ActionsV[tind][aind].dX, EnvNAVXYTHETALATCfg.cellsize_m);
+    pose.y = DISCXY2CONT(EnvNAVXYTHETALATCfg.ActionsV[tind][aind].dY, EnvNAVXYTHETALATCfg.cellsize_m);
+    pose.theta = DiscTheta2Cont(EnvNAVXYTHETALATCfg.ActionsV[tind][aind].endtheta, NAVXYTHETALAT_THETADIRS);
+    EnvNAVXYTHETALATCfg.ActionsV[tind][aind].intermptV.clear();
+    EnvNAVXYTHETALATCfg.ActionsV[tind][aind].intersectingcellsV.clear();
+    CalculateFootprintForPose(pose, &EnvNAVXYTHETALATCfg.ActionsV[tind][aind].intersectingcellsV);
+    RemoveSourceFootprint(sourcepose, &EnvNAVXYTHETALATCfg.ActionsV[tind][aind].intersectingcellsV);
 
-	SBPL_PRINTF("done pre-computing action data\n");
+#if DEBUG
+    SBPL_PRINTF("action tind=%d aind=%d: endtheta=%d (%f) dX=%d dY=%d cost=%d\n",
+                tind, aind, EnvNAVXYTHETALATCfg.ActionsV[tind][aind].endtheta, DiscTheta2Cont(EnvNAVXYTHETALATCfg.ActionsV[tind][aind].endtheta, NAVXYTHETALAT_THETADIRS),
+                EnvNAVXYTHETALATCfg.ActionsV[tind][aind].dX, EnvNAVXYTHETALATCfg.ActionsV[tind][aind].dY,
+                EnvNAVXYTHETALATCfg.ActionsV[tind][aind].cost);
+#endif
 
+    //add to the list of backward actions
+    targettheta = EnvNAVXYTHETALATCfg.ActionsV[tind][aind].endtheta;
+    if (targettheta < 0)
+    {
+      targettheta = targettheta + NAVXYTHETALAT_THETADIRS;
+    }
+    EnvNAVXYTHETALATCfg.PredActionsV[targettheta].push_back(&(EnvNAVXYTHETALATCfg.ActionsV[tind][aind]));
+  }
 
+  //now compute replanning data
+  ComputeReplanningData();
+
+  SBPL_PRINTF("done pre-computing action data\n");
 }
-
-
 
 void EnvironmentNav3DCollisionsBase::InitializeEnvConfig(vector<SBPL_xytheta_mprimitive>* motionprimitiveV)
 {
-	//aditional to configuration file initialization of EnvNAVXYTHETALATCfg if necessary
+  // additional to configuration file initialization of
+  // EnvNAVXYTHETALATCfg if necessary
 
-	//dXY dirs
-	EnvNAVXYTHETALATCfg.dXY[0][0] = -1;
-	EnvNAVXYTHETALATCfg.dXY[0][1] = -1;
-	EnvNAVXYTHETALATCfg.dXY[1][0] = -1;
-	EnvNAVXYTHETALATCfg.dXY[1][1] = 0;
-	EnvNAVXYTHETALATCfg.dXY[2][0] = -1;
-	EnvNAVXYTHETALATCfg.dXY[2][1] = 1;
-	EnvNAVXYTHETALATCfg.dXY[3][0] = 0;
-	EnvNAVXYTHETALATCfg.dXY[3][1] = -1;
-	EnvNAVXYTHETALATCfg.dXY[4][0] = 0;
-	EnvNAVXYTHETALATCfg.dXY[4][1] = 1;
-	EnvNAVXYTHETALATCfg.dXY[5][0] = 1;
-	EnvNAVXYTHETALATCfg.dXY[5][1] = -1;
-	EnvNAVXYTHETALATCfg.dXY[6][0] = 1;
-	EnvNAVXYTHETALATCfg.dXY[6][1] = 0;
-	EnvNAVXYTHETALATCfg.dXY[7][0] = 1;
-	EnvNAVXYTHETALATCfg.dXY[7][1] = 1;
+  //dXY dirs
+  EnvNAVXYTHETALATCfg.dXY[0][0] = -1;
+  EnvNAVXYTHETALATCfg.dXY[0][1] = -1;
+  EnvNAVXYTHETALATCfg.dXY[1][0] = -1;
+  EnvNAVXYTHETALATCfg.dXY[1][1] = 0;
+  EnvNAVXYTHETALATCfg.dXY[2][0] = -1;
+  EnvNAVXYTHETALATCfg.dXY[2][1] = 1;
+  EnvNAVXYTHETALATCfg.dXY[3][0] = 0;
+  EnvNAVXYTHETALATCfg.dXY[3][1] = -1;
+  EnvNAVXYTHETALATCfg.dXY[4][0] = 0;
+  EnvNAVXYTHETALATCfg.dXY[4][1] = 1;
+  EnvNAVXYTHETALATCfg.dXY[5][0] = 1;
+  EnvNAVXYTHETALATCfg.dXY[5][1] = -1;
+  EnvNAVXYTHETALATCfg.dXY[6][0] = 1;
+  EnvNAVXYTHETALATCfg.dXY[6][1] = 0;
+  EnvNAVXYTHETALATCfg.dXY[7][0] = 1;
+  EnvNAVXYTHETALATCfg.dXY[7][1] = 1;
 
-
-	EnvNAVXYTHETALAT3Dpt_t temppose;
-	temppose.x = 0.0;
-	temppose.y = 0.0;
-	temppose.theta = 0.0;
-	vector<sbpl_2Dcell_t> footprint;
-	CalculateFootprintForPose(temppose, &footprint);
-	SBPL_PRINTF("number of cells in footprint of the robot = %d\n", (unsigned int)footprint.size());
+  EnvNAVXYTHETALAT3Dpt_t temppose;
+  temppose.x = 0.0;
+  temppose.y = 0.0;
+  temppose.theta = 0.0;
+  vector<sbpl_2Dcell_t> footprint;
+  CalculateFootprintForPose(temppose, &footprint);
+  SBPL_PRINTF("number of cells in footprint of the robot = %d\n", (unsigned int)footprint.size());
 
 #if DEBUG
-	SBPL_FPRINTF(fDeb, "footprint cells (size=%d):\n", footprint.size());
-	for(int i = 0; i < (int) footprint.size(); i++)
-	{
-		SBPL_FPRINTF(fDeb, "%d %d (cont: %.3f %.3f)\n", footprint.at(i).x, footprint.at(i).y, 
-			DISCXY2CONT(footprint.at(i).x, EnvNAVXYTHETALATCfg.cellsize_m), 
-			DISCXY2CONT(footprint.at(i).y, EnvNAVXYTHETALATCfg.cellsize_m));
-	}
+  SBPL_FPRINTF(fDeb, "footprint cells (size=%d):\n", footprint.size());
+  for(int i = 0; i < (int) footprint.size(); i++)
+  {
+    SBPL_FPRINTF(fDeb, "%d %d (cont: %.3f %.3f)\n", footprint.at(i).x, footprint.at(i).y, 
+                 DISCXY2CONT(footprint.at(i).x, EnvNAVXYTHETALATCfg.cellsize_m), 
+                 DISCXY2CONT(footprint.at(i).y, EnvNAVXYTHETALATCfg.cellsize_m));
+  }
 #endif
 
-
-	if(motionprimitiveV == NULL)
-		PrecomputeActions();
-	else
-		PrecomputeActionswithCompleteMotionPrimitive(motionprimitiveV);
-
-
+  if(motionprimitiveV == NULL)
+  {
+    PrecomputeActions();
+  }
+  else
+  {
+    PrecomputeActionswithCompleteMotionPrimitive( motionprimitiveV );
+  }
 }
 
 bool EnvironmentNav3DCollisionsBase::IsValidConfiguration(int X, int Y, int Theta)
 {
-	vector<sbpl_2Dcell_t> footprint;
-	EnvNAVXYTHETALAT3Dpt_t pose;
+  vector<sbpl_2Dcell_t> footprint;
+  EnvNAVXYTHETALAT3Dpt_t pose;
 
-	//compute continuous pose
-	pose.x = DISCXY2CONT(X, EnvNAVXYTHETALATCfg.cellsize_m);
-	pose.y = DISCXY2CONT(Y, EnvNAVXYTHETALATCfg.cellsize_m);
-	pose.theta = DiscTheta2Cont(Theta, NAVXYTHETALAT_THETADIRS);
+  //compute continuous pose
+  pose.x = DISCXY2CONT(X, EnvNAVXYTHETALATCfg.cellsize_m);
+  pose.y = DISCXY2CONT(Y, EnvNAVXYTHETALATCfg.cellsize_m);
+  pose.theta = DiscTheta2Cont(Theta, NAVXYTHETALAT_THETADIRS);
 
-	//compute footprint cells
-	CalculateFootprintForPose(pose, &footprint);
+  //compute footprint cells
+  CalculateFootprintForPose( pose, &footprint );
 
-	// TODO: use regular collision check instead
-	// (this fct. only used by SetStart and SetGoal)
-	//iterate over all footprint cells
-	for(int find = 0; find < (int)footprint.size(); find++)
-	{
-		int x = footprint.at(find).x;
-		int y = footprint.at(find).y;
+  // TODO: use regular collision check instead
+  // (this fct. only used by SetStart and SetGoal)
+  //iterate over all footprint cells
+  for(int find = 0; find < (int)footprint.size(); find++)
+  {
+    int x = footprint.at(find).x;
+    int y = footprint.at(find).y;
 
-		if (!IsValidCell(x, y))
-		{
-			ROS_DEBUG("Not valid at %d %d", x, y);
-			return false;
-		}
-	}
+    if (!IsValidCell(x, y))
+    {
+      ROS_DEBUG("Not valid at %d %d", x, y);
+      return false;
+    }
+  }
 
-	return true;
+  return true;
 }
 
-bool EnvironmentNav3DCollisionsBase::updateKinematicState(const motion_planning_msgs::RobotState &robot_state, vector<sbpl_2Dpt_t>* new_fp){
-	if (!planning_environment::setRobotStateAndComputeTransforms(robot_state, *m_kinematicState))
-	{
-		ROS_WARN("Robot State to kinematic model update incomplete");
-	} else{
-		ROS_INFO("Kinematic model updated from robot state");
-	}
+bool EnvironmentNav3DCollisionsBase::updateKinematicState( const robot_state::RobotState &robot_state,
+                                                           vector<sbpl_2Dpt_t>* new_fp )
+{
+  kinematic_state_ = robot_state;
 
-	// recalculate footprint for 2D checks
+  // recalculate footprint for 2D checks
 
-	bool updated = updateFootprint();
+  bool updated = updateFootprint();
 
-	// reset counters
-	m_num3DCollChecks = 0;
-	m_num2DCollChecks = 0;
+  // reset counters
+  m_num3DCollChecks = 0;
+  m_num2DCollChecks = 0;
 
   for(unsigned int i=0; i<downprojectedFootprint.size(); i++)
-    new_fp->push_back(downprojectedFootprint[i]);
+  {
+    new_fp->push_back( downprojectedFootprint[ i ]);
+  }
   return updated;
 }
 
-void EnvironmentNav3DCollisionsBase::updateRobotPosition(double x, double y, double theta){
-	btTransform cur(tf::createQuaternionFromYaw(theta), btVector3(x + EnvNAVXYTHETALATCfg.costmap_origin_x, y + EnvNAVXYTHETALATCfg.costmap_origin_x, 0.0));
-	m_kinematicState->getJointStateVector()[0]->setJointStateValues(cur);
-	m_kinematicState->updateKinematicLinks();
+void EnvironmentNav3DCollisionsBase::updateRobotPosition(double x, double y, double theta)
+{
+  std::map<std::string, double> joint_update;
+  joint_update[ "world_joint/x" ] = x + EnvNAVXYTHETALATCfg.costmap_origin_x;
+  joint_update[ "world_joint/y" ] = y + EnvNAVXYTHETALATCfg.costmap_origin_y;
+  joint_update[ "world_joint/theta" ] = theta;
+  kinematic_state_.setStateValues( joint_update );
 }
 
-void EnvironmentNav3DCollisionsBase::updateAttachedObjects(const mapping_msgs::AttachedCollisionObject& coll){
-	// kinematic state needs to be freed because of mutex lock
-	if (m_kinematicState){
-		delete m_kinematicState;
-		m_kinematicState = NULL;
-	}
-	if(!m_planningCollisionModel.addAttachedObject(coll)){
-    ROS_ERROR("Failed to add attached object to collision model");
-    return;
-  }
-	m_kinematicState = new planning_models::KinematicState(m_planningCollisionModel.getKinematicModel());
-  //printf("msg type %d, shape type %d\n",coll.object.shapes.back().type, m_kinematicState->getAttachedBodyState(coll.object.id)->getAttachedBodyModel()->getAttachedLinkModel()->getLinkShape()->type);
+bool EnvironmentNav3DCollisionsBase::updateFootprint()
+{
+  // Set pose of robot to 0,0,0 to compute the footprint.
+  std::map<std::string, double> joint_update;
+  joint_update[ "world_joint/x" ] = 0;
+  joint_update[ "world_joint/y" ] = 0;
+  joint_update[ "world_joint/theta" ] = 0;
+  kinematic_state_.setStateValues( joint_update );
 
-  if(coll.object.operation.operation==mapping_msgs::CollisionObjectOperation::ATTACH_AND_REMOVE_AS_OBJECT){
-    basketRadius = coll.object.shapes.back().dimensions.front();
-    bool haveObject = false;
-    for(unsigned int i = 0; i < m_footprintLinkNames.size(); i++){
-      if(m_footprintLinkNames[i].compare(coll.object.id)==0){
-        haveObject = true;
-        break;
-      }
-    }
-    if(!haveObject)
-      m_footprintLinkNames.push_back(coll.object.id);
-  }
-  else if(coll.object.operation.operation==mapping_msgs::CollisionObjectOperation::DETACH_AND_ADD_AS_OBJECT){
-    for(unsigned int i = 0; i < m_footprintLinkNames.size(); i++){
-      if(m_footprintLinkNames[i].compare(coll.object.id)==0){
-        m_footprintLinkNames.erase(m_footprintLinkNames.begin()+i);
-        break;
-      }
-    }
-  }
-}
+  // TODO: add attached objects!
 
-bool EnvironmentNav3DCollisionsBase::updateFootprint(){
-	// TODO: add attached objects?
-
-	m_kinematicState->getJointStateVector()[0]->setJointStateValues(tf::Transform(tf::createIdentityQuaternion()));
-	m_kinematicState->updateKinematicLinks();
-
-	std::vector<cv::Point> points;
+  std::vector<cv::Point> points;
   //pcl::PointCloud<pcl::PointXYZ>::Ptr cloud_projected (new pcl::PointCloud<pcl::PointXYZ>);
   //cloud_projected->header.frame_id = "base_footprint";
   //cloud_projected->header.stamp = ros::Time(0);
-	for(unsigned int i = 0; i < m_footprintLinkNames.size(); i++) {
+  for(unsigned int i = 0; i < m_footprintLinkNames.size(); i++)
+  {
     printf("projecting link %s\n",m_footprintLinkNames[i].c_str());
-    if(m_footprintLinkNames[i].compare("basket")!=0){
-      const planning_models::KinematicState::LinkState* ls = m_kinematicState->getLinkState(m_footprintLinkNames[i]);
-      const shapes::Shape* shape;
-      if(ls==NULL){
-        /*
-        //check if this is an attached object
-        planning_models::KinematicState::AttachedBodyState* abs = m_kinematicState->getAttachedBodyState(m_footprintLinkNames[i]);
-        if(abs==NULL){
-        */
-          ROS_WARN("Link (%s) does not exist in the kinematic state!",m_footprintLinkNames[i].c_str());
-          continue;
-        /*
-        }
-        const planning_models::KinematicModel::AttachedBodyModel* abm = abs->getAttachedBodyModel();
-        if(abm==NULL){
-          ROS_WARN("Attached object %s doesn't have a body model!",m_footprintLinkNames[i].c_str());
-          continue;
-        }
-        //printf("2\n");
-        shape = abm->getAttachedLinkModel()->getLinkShape();
-        //printf("3\n");
-        */
-      }
-      else{
-        if(ls->getLinkModel()->getLinkShape() == NULL){
-          ROS_WARN("No Shape for link %s", m_footprintLinkNames[i].c_str());
-          continue;
-        }
-        shape = ls->getLinkModel()->getLinkShape();
-      }
-
-      printf("shape ptr %x\n",shape);
-      printf("type %d\n",shape->type);
-      if(shape->type == shapes::MESH){
-        const shapes::Mesh *mesh = dynamic_cast<const shapes::Mesh*>(shape);
-        if(mesh == NULL){
-          ROS_WARN("Could not get mesh for link %s", m_footprintLinkNames[i].c_str());
-          continue;
-        }
-        if (mesh->vertexCount > 0 && mesh->triangleCount > 0)
-        {
-          const btTransform& trans = ls->getGlobalCollisionBodyTransform();
-
-          for (unsigned int i = 0 ; i < mesh->vertexCount ; ++i)
-          {
-            unsigned int i3 = i * 3;
-            tf::Vector3 point3d(mesh->vertices[i3], mesh->vertices[i3 + 1], mesh->vertices[i3 + 2]);
-            point3d = trans * point3d;
-            cv::Point pt;
-            //pcl::PointXYZ pt;
-            pt.x = floor(point3d.x() / EnvNAVXYTHETALATCfg.cellsize_m);
-            pt.y = floor(point3d.y() / EnvNAVXYTHETALATCfg.cellsize_m);
-            //pt.x = point3d.x(); //floor(point3d.x() / EnvNAVXYTHETALATCfg.cellsize_m);
-            //pt.y = point3d.y(); //floor(point3d.y() / EnvNAVXYTHETALATCfg.cellsize_m);
-            //pt.z = 0;
-            //cloud_projected->points.push_back(pt);
-            points.push_back(pt);
-          }
-
-        }
+    const robot_state::LinkState* ls = kinematic_state_->getLinkState( m_footprintLinkNames[ i ]);
+    const shapes::ShapeConstPtr link_shape;
+    if( ls == NULL )
+    {
+      ROS_WARN("Link (%s) does not exist in the kinematic state!",m_footprintLinkNames[i].c_str());
+      continue;
+    }
+    else
+    {
+      link_shape = ls->getLinkModel()->getShape();
+      if( link_shape == NULL )
+      {
+        ROS_WARN("No Shape for link %s", m_footprintLinkNames[i].c_str());
+        continue;
       }
     }
-    else{
-      printf("4\n");
-      //const shapes::Shape* shape = m_kinematicState->getAttachedBodyState(m_footprintLinkNames[i])->getAttachedBodyModel()->getAttachedLinkModel()->getLinkShape();
-      //const shapes::Cylinder *c = dynamic_cast<const shapes::Cylinder*>(shape);
-      const btTransform& trans = m_kinematicState->getAttachedBodyState(m_footprintLinkNames[i])->getGlobalCollisionBodyTransforms().front();
-      printf("5\n");
-      double r = basketRadius;//c->radius;
-      int numpts = 100;
-      for(unsigned int i=0; i<numpts; i++){
-        double a = 2*M_PI*double(i)/numpts;
-        tf::Vector3 point3d(r*cos(a),r*sin(a),0);
-        point3d = trans * point3d;
-        cv::Point pt;
-        pt.x = floor(point3d.x() / EnvNAVXYTHETALATCfg.cellsize_m);
-        pt.y = floor(point3d.y() / EnvNAVXYTHETALATCfg.cellsize_m);
-        points.push_back(pt);
+
+    // Down-project the link shape
+    downprojectShape( link_shape, ls->getGlobalCollisionBodyTransform(), points );
+
+    // Then down-project the shapes of all attached bodies.
+    std::vector<const AttachedBody*> attached_bodies;
+    ls->getAttachedBodies( attached_bodies );
+
+    for( int body_index = 0; body_index < attached_bodies.size(); body_index++ )
+    {
+      const AttachedBody* body = attached_bodies[ body_index ];
+      for( int shape_index = 0; shape_index < body->getShapes().size(); shape_index++ )
+      {
+        shapes::ShapeConstPtr shape = body->getShapes()[ shape_index ];
+        Eigen::Affine3d transform = body->getGlobalCollisionBodyTransforms()[ shape_index ];
+        
+        downprojectShape( shape, transform, points );
       }
-      printf("6\n");
     }
-	}
+  }
   printf("done with link projection\n");
   //footPointsPub.publish(cloud_projected);
 
-	if (points.size() < 3){
-	//if (cloud_projected->size() < 3){
-		ROS_ERROR("Number of points from link meshes too small to compute footprint");
-		return false;
-	}
+  if (points.size() < 3)
+  {
+    ROS_ERROR("Number of points from link meshes too small to compute footprint");
+    return false;
+  }
 
-	vector<int> hull;
-	cv::convexHull(cv::Mat(points), hull);
+  vector<int> hull;
+  cv::convexHull( cv::Mat( points ), hull );
 
   //pcl::PointCloud<pcl::PointXYZ>::Ptr hull (new pcl::PointCloud<pcl::PointXYZ>);
   //pcl::ConcaveHull<pcl::PointXYZ> chull;
@@ -1246,17 +1216,18 @@ bool EnvironmentNav3DCollisionsBase::updateFootprint(){
   //chull.setAlpha(1.0);
   //chull.reconstruct (*hull);
 
-	ROS_INFO("Convex hull of footprint computed, %d points", int(hull.size()));
-	//ROS_INFO("Convex hull of footprint computed, %d points", int(hull->points.size()));
-	geometry_msgs::PolygonStamped footprint_poly;
-	footprint_poly.header.frame_id = "base_footprint";
-	footprint_poly.header.stamp = ros::Time::now();
+  ROS_INFO("Convex hull of footprint computed, %d points", int(hull.size()));
+  //ROS_INFO("Convex hull of footprint computed, %d points", int(hull->points.size()));
+  geometry_msgs::PolygonStamped footprint_poly;
+  footprint_poly.header.frame_id = "base_footprint";
+  footprint_poly.header.stamp = ros::Time::now();
 
-	footprint_poly.polygon.points.resize(hull.size());
-	//footprint_poly.polygon.points.resize(hull->points.size());
+  footprint_poly.polygon.points.resize(hull.size());
+  //footprint_poly.polygon.points.resize(hull->points.size());
   bool footprintChanged = false;
-  if(hull.size() != downprojectedFootprint.size()){
-  //if(hull->points.size() != downprojectedFootprint.size()){
+  if(hull.size() != downprojectedFootprint.size())
+  {
+    //if(hull->points.size() != downprojectedFootprint.size()){
     footprintChanged = true;
     printf("footprint size changed %d->%d\n",downprojectedFootprint.size(),hull.size());
     //printf("footprint size changed %d->%d\n",downprojectedFootprint.size(),hull->points.size());
@@ -1264,21 +1235,27 @@ bool EnvironmentNav3DCollisionsBase::updateFootprint(){
   downprojectedFootprint.resize(hull.size());
   //downprojectedFootprint.resize(hull->points.size());
 
-    // compute center to enlarge with padding:
-    tf::Vector3 center(0,0,0);
-    for(unsigned int i = 0; i < hull.size(); ++i){
+  // compute center to enlarge with padding:
+  tf::Vector3 center(0,0,0);
+  for(unsigned int i = 0; i < hull.size(); ++i)
+  {
     //for(unsigned int i = 0; i < hull->points.size(); ++i){
-    	center.setX(center.x() + footprint_poly.polygon.points[i].x);
-    	center.setY(center.y() + footprint_poly.polygon.points[i].y);
-    }
-    center / double(hull.size());
-    //center / double(hull->points.size());
-    double footprintPadding = 0.02; // 2cm => param?
+    center.setX(center.x() + footprint_poly.polygon.points[i].x);
+    center.setY(center.y() + footprint_poly.polygon.points[i].y);
+  }
+  center / double(hull.size());
+  //center / double(hull->points.size());
+  double footprintPadding = 0.02; // 2cm => param?
 
-	for(unsigned int i = 0; i < hull.size(); ++i){
+  for(unsigned int i = 0; i < hull.size(); ++i)
+  {
 	//for(unsigned int i = 0; i < hull->points.size(); ++i){
     tf::Vector3 p((double(points[hull[i]].x)+0.5) * EnvNAVXYTHETALATCfg.cellsize_m,
-        (double(points[hull[i]].y)+0.5) * EnvNAVXYTHETALATCfg.cellsize_m, 0);
+                  (double(points[hull[i]].y)+0.5) * EnvNAVXYTHETALATCfg.cellsize_m, 0);
+
+    // TODO: this padding code pads outward from the center, but
+    // should really pad outward along the perimeter normal.
+
     //tf::Vector3 p(hull->points[i].x, hull->points[i].y, 0);
     p += (p-center).normalize() * footprintPadding;
 
@@ -1286,7 +1263,8 @@ bool EnvironmentNav3DCollisionsBase::updateFootprint(){
     footprint_poly.polygon.points[i].y = p.y();
     footprint_poly.polygon.points[i].z = 0.0;
 
-    if(!footprintChanged){
+    if(!footprintChanged)
+    {
       double dx = downprojectedFootprint[i].x-p.x();
       double dy = downprojectedFootprint[i].y-p.y();
       if(sqrt(dx*dx+dy*dy) > EnvNAVXYTHETALATCfg.cellsize_m/2){
@@ -1297,112 +1275,89 @@ bool EnvironmentNav3DCollisionsBase::updateFootprint(){
     
     downprojectedFootprint[i].x = p.x();
     downprojectedFootprint[i].y = p.y();
-	}
+  }
 
-	//m_footprintPolygonPub.publish(footprint_poly);
+  //m_footprintPolygonPub.publish(footprint_poly);
 
-	// recompute footprints along actions (rollout)
+  // recompute footprints along actions (rollout)
   /*
-  if(footprintChanged)
+    if(footprintChanged)
     PrecomputeActionswithCompleteMotionPrimitive(&EnvNAVXYTHETALATCfg.mprimV);
   */
   return footprintChanged;
 }
 
-void EnvironmentNav3DCollisionsBase::updateCollisionObjects(const mapping_msgs::CollisionObject& coll){
+void EnvironmentNav3DCollisionsBase::downprojectShape( const shapes::ShapeConstPtr shape,
+                                                       const Eigen::Affine3d& transform,
+                                                       std::vector<cv::Point>& points )
+{
+  printf("shape ptr %x\n",shape);
+  printf("type %d\n",shape->type);
 
-	if (coll.poses.size() == 0){
-		ROS_INFO("Skipping empty collision map");
-	} else {
-		ROS_INFO("Updating collision map");
-		m_planningCollisionModel.addStaticObject(coll);
-
-	//	std::vector<shapes::Shape*> shapes;
-	//	std::vector<btTransform> poses;
-	//	for (unsigned i = 0; i < coll.poses.size(); ++i){
-	//		double size = coll.shapes[i].dimensions[0];
-	//		shapes.push_back(new shapes::Box(size,size,size));
-	//		tf::Pose pose;
-	//		tf::poseMsgToTF(coll.poses[i], pose);
-	//		poses.push_back(pose);
-	//	}
-	//
-	//	m_planningCollisionModel.addStaticObject("map", shapes, poses, 0.0); //TODO: param for padding?
-
-
-		// ignore collisions by the wheels:
-		collision_space::EnvironmentModel::AllowedCollisionMatrix acm = m_planningCollisionModel.getCurrentAllowedCollisionMatrix();
-		acm.changeEntry("fl_caster_l_wheel_link", true);
-		acm.changeEntry("fl_caster_r_wheel_link", true);
-		acm.changeEntry("fl_caster_rotation_link", true);
-		acm.changeEntry("bl_caster_l_wheel_link", true);
-		acm.changeEntry("bl_caster_r_wheel_link", true);
-		acm.changeEntry("bl_caster_rotation_link", true);
-		acm.changeEntry("fr_caster_l_wheel_link", true);
-		acm.changeEntry("fr_caster_r_wheel_link", true);
-		acm.changeEntry("fr_caster_rotation_link", true);
-		acm.changeEntry("br_caster_l_wheel_link", true);
-		acm.changeEntry("br_caster_r_wheel_link", true);
-		acm.changeEntry("br_caster_rotation_link", true);
-
-    if(use_multi_layer){
-      ROS_INFO("Using multiple layers so we can disable most 3D collision checking....we only need the arms");
-      acm.changeEntry("base_link", true);
-      acm.changeEntry("torso_lift_link", true);
-      acm.changeEntry("head_pan_link", true);
-      acm.changeEntry("head_tilt_link", true);
-      acm.changeEntry("sensor_mount_link", true);
-      acm.changeEntry("double_stereo_link", true);
-      acm.changeEntry("narrow_stereo_link", true);
-      acm.changeEntry("wide_stereo_link", true);
-      acm.changeEntry("imu_link", true);
-      acm.changeEntry("l_torso_lift_side_plate_link", true);
-      acm.changeEntry("laser_tilt_mount_link", true);
-      acm.changeEntry("laser_tilt_link", true);
-      acm.changeEntry("r_torso_lift_side_plate_link", true);
-      acm.changeEntry("base_bellow_link", true);
-      acm.changeEntry("base_laser_link", true);
+  if( shape->type == shapes::MESH )
+  {
+    boost::shared_ptr<const shapes::Mesh> mesh = boost::dynamic_pointer_cast<const shapes::Mesh>( shape );
+    if( mesh == NULL )
+    {
+      ROS_WARN("Could not get mesh for link %s", m_footprintLinkNames[i].c_str());
+      return;
     }
-
-		m_planningCollisionModel.setAlteredAllowedCollisionMatrix(acm);
-    if(use_multi_layer)
-      m_planningCollisionModel.disableCollisionsForNonUpdatedLinks("arms");
-	}
-
-	m_collisionReceived = true;
-	m_num3DCollChecks = 0;
-	m_num2DCollChecks = 0;
-
+    if( mesh->vertex_count > 0 &&
+        mesh->triangle_count > 0 )
+    {
+      for (unsigned int i = 0 ; i < mesh->vertex_count ; ++i)
+      {
+        unsigned int i3 = i * 3;
+        Eigen::Vector3d point3d( mesh->vertices[ i3 ], mesh->vertices[ i3 + 1 ], mesh->vertices[ i3 + 2 ]);
+        point3d = transform * point3d;
+        cv::Point pt;
+        pt.x = floor( point3d[0] / EnvNAVXYTHETALATCfg.cellsize_m );
+        pt.y = floor( point3d[1] / EnvNAVXYTHETALATCfg.cellsize_m );
+        points.push_back(pt);
+      }
+    }
+  }
 }
 
 /// 3D collision check at x,y,theta in costmap coordinates
-bool EnvironmentNav3DCollisionsBase::isIn3DCollision(double x, double y, double theta){
-	ROS_DEBUG("3D collision check at %f %f %f", x, y, theta);
-	if (!m_collisionReceived){
-		ROS_ERROR("pose_follower_3d did not receive any 3D CollisionObject, no 3D collision check possible");
-		return true;
-	}
+bool EnvironmentNav3DCollisionsBase::isIn3DCollision(double x, double y, double theta)
+{
+  ROS_DEBUG("3D collision check at %f %f %f", x, y, theta);
 
-	//m_num3DCollChecks++;
+  //m_num3DCollChecks++;
 
-	// move robot to planned base configuration:
-	updateRobotPosition(x,y,theta);
-	// this is the collision check:
-	return m_planningCollisionModel.isKinematicStateInEnvironmentCollision(*m_kinematicState);
+  // move robot to planned base configuration:
+  updateRobotPosition( x, y, theta );
+
+  planning_scene_monitor::LockedPlanningSceneRO read_only_scene( planning_scene_monitor_ );
+  collision_detection::CollisionRequest request;
+  // If we are using multi-layer, only the arms are checked for 3d
+  // collisions, and the base and spine layers are only checked by the
+  // 2D projection.  This is my understanding anyway. -hersh
+  if( use_multi_layer )
+  {
+    request.group_name = "arms";
+  }
+  collision_detection::CollisionResult result;
+  read_only_scene->getCollisionWorld()->checkRobotCollision( request, result,
+                                                             read_only_scene->getCollisionRobot(),
+                                                             kinematic_state_ );
+  return result.collision;
 }
 
-void EnvironmentNav3DCollisionsBase::visualize3DCollsisions(){
-	visualization_msgs::MarkerArray arr;
-	std_msgs::ColorRGBA col;
-	col.r = 1.0;
-	col.g = 0.0;
-	col.b = 0.0;
-	col.a = 0.9;
-	m_planningCollisionModel.getAllCollisionPointMarkers(*m_kinematicState, arr, col, ros::Duration(2.0));
-	col.g = 1.0;
-	m_planningCollisionModel.getAttachedCollisionObjectMarkers(*m_kinematicState, arr, "attached", col, ros::Duration(2.0));
-	//planningCollisionModel.getStaticCollisionObjectMarkers(m_kinematicState, arr, col, ros::Duration(0.1));
-	m_collisionMarkerPub.publish(arr);
+void EnvironmentNav3DCollisionsBase::visualize3DCollsisions()
+{
+/////  visualization_msgs::MarkerArray arr;
+/////  std_msgs::ColorRGBA col;
+/////  col.r = 1.0;
+/////  col.g = 0.0;
+/////  col.b = 0.0;
+/////  col.a = 0.9;
+/////  m_planningCollisionModel.getAllCollisionPointMarkers(*m_kinematicState, arr, col, ros::Duration(2.0));
+/////  col.g = 1.0;
+/////  m_planningCollisionModel.getAttachedCollisionObjectMarkers(*m_kinematicState, arr, "attached", col, ros::Duration(2.0));
+/////  //planningCollisionModel.getStaticCollisionObjectMarkers(m_kinematicState, arr, col, ros::Duration(0.1));
+/////  m_collisionMarkerPub.publish(arr);
 }
 
 
@@ -1512,12 +1467,12 @@ void EnvironmentNav3DCollisionsBase::CalculateFootprintForPose(EnvNAVXYTHETALAT3
     footprint->insert(pair<int,int>(CONTXY2DISC(pose.x, EnvNAVXYTHETALATCfg.cellsize_m), CONTXY2DISC(pose.y, EnvNAVXYTHETALATCfg.cellsize_m)));
 
     /*
-    for(pind = 0; pind < (int)footprint->size(); pind++)
-    {
+      for(pind = 0; pind < (int)footprint->size(); pind++)
+      {
       if(cell.x == footprint->at(pind).x && cell.y == footprint->at(pind).y)
-        break;
-    }
-    if(pind == (int)footprint->size()) footprint->push_back(cell);
+      break;
+      }
+      if(pind == (int)footprint->size()) footprint->push_back(cell);
     */
     return;
   }
@@ -1578,66 +1533,66 @@ void EnvironmentNav3DCollisionsBase::CalculateFootprintForPose(EnvNAVXYTHETALAT3
   start.y = CONTXY2DISC(avg_y, EnvNAVXYTHETALATCfg.cellsize_m);
   getFootprintCells(start, &bounding_polygon, footprint);
   /*
-  for(double x=min_x; x<=max_x; x+=EnvNAVXYTHETALATCfg.cellsize_m/3){
+    for(double x=min_x; x<=max_x; x+=EnvNAVXYTHETALATCfg.cellsize_m/3){
     for(double y=min_y; y<=max_y; y+=EnvNAVXYTHETALATCfg.cellsize_m/3){
-      pt.x = x;
-      pt.y = y;
-      discrete_x = CONTXY2DISC(pt.x, EnvNAVXYTHETALATCfg.cellsize_m);
-      discrete_y = CONTXY2DISC(pt.y, EnvNAVXYTHETALATCfg.cellsize_m);
+    pt.x = x;
+    pt.y = y;
+    discrete_x = CONTXY2DISC(pt.x, EnvNAVXYTHETALATCfg.cellsize_m);
+    discrete_y = CONTXY2DISC(pt.y, EnvNAVXYTHETALATCfg.cellsize_m);
       
-      //see if we just tested this point
-      if(discrete_x != prev_discrete_x || discrete_y != prev_discrete_y || prev_inside==0){
+    //see if we just tested this point
+    if(discrete_x != prev_discrete_x || discrete_y != prev_discrete_y || prev_inside==0){
 
-#if DEBUG
+    #if DEBUG
 //		SBPL_PRINTF("Testing point: %f %f Discrete: %d %d\n", pt.x, pt.y, discrete_x, discrete_y);
 #endif
 	
-		if(IsInsideFootprint(pt, &bounding_polygon)){ 
-		//convert to a grid point
+if(IsInsideFootprint(pt, &bounding_polygon)){ 
+//convert to a grid point
 
 #if DEBUG
 //			SBPL_PRINTF("Pt Inside %f %f\n", pt.x, pt.y);
 #endif
 
-			//sbpl_2Dcell_t cell;
-			//cell.x = discrete_x;
-			//cell.y = discrete_y;
+//sbpl_2Dcell_t cell;
+//cell.x = discrete_x;
+//cell.y = discrete_y;
 
-			//insert point if not there already
-			//int pind = 0;
-      //TODO: this check for existance is O(n) because it uses a vector
-      // implement this as a set and it will be O(log n)
-      footprint->insert(pair<int,int>(discrete_x,discrete_y));
-			//for(pind = 0; pind < (int)footprint->size(); pind++)
-			//{
-				//if(cell.x == footprint->at(pind).x && cell.y == footprint->at(pind).y)
-					//break;
-			//}
-			//if(pind == (int)footprint->size()) footprint->push_back(cell);
+//insert point if not there already
+//int pind = 0;
+//TODO: this check for existance is O(n) because it uses a vector
+// implement this as a set and it will be O(log n)
+footprint->insert(pair<int,int>(discrete_x,discrete_y));
+//for(pind = 0; pind < (int)footprint->size(); pind++)
+//{
+//if(cell.x == footprint->at(pind).x && cell.y == footprint->at(pind).y)
+//break;
+//}
+//if(pind == (int)footprint->size()) footprint->push_back(cell);
 
-			//prev_inside = 1;
+//prev_inside = 1;
 
 #if DEBUG
 //			SBPL_PRINTF("Added pt to footprint: %f %f\n", pt.x, pt.y);
 #endif
-		}
-		else{
-			prev_inside = 0;
-		}
+}
+else{
+prev_inside = 0;
+}
 
-      }
-	  else
-	  {
+}
+else
+{
 #if DEBUG
-		//SBPL_PRINTF("Skipping pt: %f %f\n", pt.x, pt.y);
+//SBPL_PRINTF("Skipping pt: %f %f\n", pt.x, pt.y);
 #endif
-      }
+}
       
-      prev_discrete_x = discrete_x;
-      prev_discrete_y = discrete_y;
+prev_discrete_x = discrete_x;
+prev_discrete_y = discrete_y;
 
-    }//over x_min...x_max
-  }
+}//over x_min...x_max
+}
   */
 }
 
@@ -1703,8 +1658,7 @@ void EnvironmentNav3DCollisionsBase::CalculateFootprintForPose(EnvNAVXYTHETALAT3
   set<pair<int,int> > cells;
   for(unsigned int i=0; i<footprint->size(); i++)
     cells.insert(pair<int,int>(footprint->at(i).x,footprint->at(i).y));
-	//CalculateFootprintForPose(pose, footprint, EnvNAVXYTHETALATCfg.FootprintPolygon);
-	CalculateFootprintForPose(pose, &cells, EnvNAVXYTHETALATCfg.FootprintPolygon);
+  CalculateFootprintForPose(pose, &cells, EnvNAVXYTHETALATCfg.FootprintPolygon);
   for(set<pair<int,int> >::iterator it=cells.begin(); it!=cells.end(); it++){
     sbpl_2Dcell_t cell;
     cell.x = it->first;
@@ -1843,7 +1797,7 @@ bool EnvironmentNav3DCollisionsBase::CheckQuant(FILE* fOut)
 bool EnvironmentNav3DCollisionsBase::InitializeEnv(int width, int height,
 		double origin_x, double origin_y,
 		double res, const unsigned char* mapdata,
-		const vector<std::string>& footprint_links, const motion_planning_msgs::RobotState& robot_state,
+		const vector<std::string>& footprint_links, const robot_state::RobotState& robot_state,
 					double nominalvel_mpersecs, double timetoturn45degsinplace_secs,
 					unsigned char obsthresh,  const char* sMotPrimFile, vector<sbpl_2Dpt_t> base_fp, vector<sbpl_2Dpt_t>* new_fp)
 {
@@ -1858,48 +1812,48 @@ bool EnvironmentNav3DCollisionsBase::InitializeEnv(int width, int height,
 //		SBPL_PRINTF("perimeter(%d) = %.4f %.4f\n", i, perimeterptsV.at(i).x, perimeterptsV.at(i).y);
 //	}
 
-	//m_collisionModel = collisionModel;
+  //m_collisionModel = collisionModel;
 
 
-	EnvNAVXYTHETALATCfg.obsthresh = obsthresh;
-	m_footprintLinkNames = footprint_links;
+  EnvNAVXYTHETALATCfg.obsthresh = obsthresh;
+  m_footprintLinkNames = footprint_links;
   EnvNAVXYTHETALATCfg.FootprintPolygon = base_fp;
 
-	// set config:
-	SetConfiguration(width, height,mapdata,
-						0,0,0, 0,0,0,
-						origin_x, origin_y,
-						res, nominalvel_mpersecs, timetoturn45degsinplace_secs);
+  // set config:
+  SetConfiguration(width, height,mapdata,
+                   0,0,0, 0,0,0,
+                   origin_x, origin_y,
+                   res, nominalvel_mpersecs, timetoturn45degsinplace_secs);
 
-	// update robot kinematic state and footprint
-	updateKinematicState(robot_state,new_fp);
+  // update robot kinematic state and footprint
+  updateKinematicState( robot_state, new_fp );
 
-	if(sMotPrimFile != NULL)
-	{
-		FILE* fMotPrim = fopen(sMotPrimFile, "r");
-		if(fMotPrim == NULL)
-		{
-			SBPL_ERROR("ERROR: unable to open %s\n", sMotPrimFile);
-			throw new SBPL_Exception();
-		}
+  if(sMotPrimFile != NULL)
+  {
+    FILE* fMotPrim = fopen(sMotPrimFile, "r");
+    if(fMotPrim == NULL)
+    {
+      SBPL_ERROR("ERROR: unable to open %s\n", sMotPrimFile);
+      throw new SBPL_Exception();
+    }
 
-		if(ReadMotionPrimitives(fMotPrim) == false)
-		{
-			SBPL_ERROR("ERROR: failed to read in motion primitive file\n");
-			throw new SBPL_Exception();
-		}
+    if(ReadMotionPrimitives(fMotPrim) == false)
+    {
+      SBPL_ERROR("ERROR: failed to read in motion primitive file\n");
+      throw new SBPL_Exception();
+    }
     fclose(fMotPrim);
-	}
+  }
 
-	if(EnvNAVXYTHETALATCfg.mprimV.size() != 0)
-	{
-		InitGeneral(&EnvNAVXYTHETALATCfg.mprimV);
-	}
-	else
-		InitGeneral(NULL);
+  if(EnvNAVXYTHETALATCfg.mprimV.size() != 0)
+  {
+    InitGeneral(&EnvNAVXYTHETALATCfg.mprimV);
+  }
+  else
+    InitGeneral(NULL);
 
   printFootprint("base.txt",EnvNAVXYTHETALATCfg.ActionsV[0][0].intersectingcellsV);
-	return true;
+  return true;
 }
 
 
@@ -2360,83 +2314,85 @@ void EnvironmentNav3DCollisions::ConvertStateIDPathintoXYThetaPath(vector<int>* 
 
 // goal position in costmap coordinates!
 // returns the stateid if success, and -1 otherwise
-int EnvironmentNav3DCollisions::SetGoal(double x_m, double y_m, double theta_rad){
+int EnvironmentNav3DCollisions::SetGoal(double x_m, double y_m, double theta_rad)
+{
 
-	int x = CONTXY2DISC(x_m, EnvNAVXYTHETALATCfg.cellsize_m);
-	int y = CONTXY2DISC(y_m, EnvNAVXYTHETALATCfg.cellsize_m);
-	int theta = ContTheta2Disc(theta_rad, NAVXYTHETALAT_THETADIRS);
+  int x = CONTXY2DISC(x_m, EnvNAVXYTHETALATCfg.cellsize_m);
+  int y = CONTXY2DISC(y_m, EnvNAVXYTHETALATCfg.cellsize_m);
+  int theta = ContTheta2Disc(theta_rad, NAVXYTHETALAT_THETADIRS);
 
-	SBPL_PRINTF("env: setting goal to %.3f %.3f %.3f (%d %d %d)\n", x_m, y_m, theta_rad, x, y, theta);
+  SBPL_PRINTF("env: setting goal to %.3f %.3f %.3f (%d %d %d)\n", x_m, y_m, theta_rad, x, y, theta);
 
-	if(!IsWithinMapCell(x,y))
-	{
-		SBPL_ERROR("ERROR: trying to set a goal cell %d %d that is outside of map\n", x,y);
-		return -1;
-	}
+  if(!IsWithinMapCell(x,y))
+  {
+    SBPL_ERROR("ERROR: trying to set a goal cell %d %d that is outside of map\n", x,y);
+    return -1;
+  }
 
-    if(!IsValidConfiguration(x,y,theta))
-	{
-    	//ROS_INFO("Goal configuration  %f %f %f in 2D collision, checking 3D", x_m, y_m, theta_rad);
-    	//if (isIn3DCollision(x_m,y_m,theta_rad)){
-    		ROS_ERROR("Goal configuration %f %f %f in 3D collision", x_m, y_m, theta_rad);
-    		visualize3DCollsisions();
-    		return -1;
-    	//}
+  if(!IsValidConfiguration(x,y,theta))
+  {
+    //ROS_INFO("Goal configuration  %f %f %f in 2D collision, checking 3D", x_m, y_m, theta_rad);
+    //if (isIn3DCollision(x_m,y_m,theta_rad)){
+    ROS_ERROR("Goal configuration %f %f %f in 3D collision", x_m, y_m, theta_rad);
+//    visualize3DCollsisions();
+    return -1;
+    //}
 
-	}
-
-
-    visualization_msgs::MarkerArray arr;
-    std_msgs::ColorRGBA col;
-    col.g = 1.0;
-    col.a = 0.5;
-    updateRobotPosition(x_m, y_m, theta_rad);
-    //m_planningCollisionModel.getRobotMarkersGivenState(*m_kinematicState, arr, col, "robot_goal", ros::Duration(0));
-    col.b = 1.0;
-    m_planningCollisionModel.getAttachedCollisionObjectMarkers(*m_kinematicState, arr, "attached", col, ros::Duration(0.0));
-    m_collisionMarkerPub.publish(arr);
+  }
 
 
-    EnvNAVXYTHETALATHashEntry_t* OutHashEntry;
-    if((OutHashEntry = (this->*GetHashEntry)(x, y, theta)) == NULL){
-        //have to create a new entry
-        OutHashEntry = (this->*CreateNewHashEntry)(x, y, theta);
-    }
-
-	//need to recompute start heuristics?
-	if(goalstateid != OutHashEntry->stateID)
-	{
-		bNeedtoRecomputeStartHeuristics = true; //because termination condition may not plan all the way to the new goal
-		bNeedtoRecomputeGoalHeuristics = true; //because goal heuristics change
-	}
-
+///// It's not clear to me if this collision-object-marker stuff is supported by MoveIt.
+/////
+/////  visualization_msgs::MarkerArray arr;
+/////  std_msgs::ColorRGBA col;
+/////  col.g = 1.0;
+/////  col.a = 0.5;
+  updateRobotPosition(x_m, y_m, theta_rad);
+/////  //m_planningCollisionModel.getRobotMarkersGivenState(*m_kinematicState, arr, col, "robot_goal", ros::Duration(0));
+/////  col.b = 1.0;
+/////  m_planningCollisionModel.getAttachedCollisionObjectMarkers(*m_kinematicState, arr, "attached", col, ros::Duration(0.0));
+/////  m_collisionMarkerPub.publish(arr);
 
 
-    goalstateid = OutHashEntry->stateID;
+  EnvNAVXYTHETALATHashEntry_t* OutHashEntry;
+  if((OutHashEntry = (this->*GetHashEntry)(x, y, theta)) == NULL){
+    //have to create a new entry
+    OutHashEntry = (this->*CreateNewHashEntry)(x, y, theta);
+  }
 
-	EnvNAVXYTHETALATCfg.EndX_c = x;
-	EnvNAVXYTHETALATCfg.EndY_c = y;
-	EnvNAVXYTHETALATCfg.EndTheta = theta;
+  //need to recompute start heuristics?
+  if(goalstateid != OutHashEntry->stateID)
+  {
+    bNeedtoRecomputeStartHeuristics = true; //because termination condition may not plan all the way to the new goal
+    bNeedtoRecomputeGoalHeuristics = true; //because goal heuristics change
+  }
 
 
-    return goalstateid;
 
+  goalstateid = OutHashEntry->stateID;
+
+  EnvNAVXYTHETALATCfg.EndX_c = x;
+  EnvNAVXYTHETALATCfg.EndY_c = y;
+  EnvNAVXYTHETALATCfg.EndTheta = theta;
+
+  return goalstateid;
 }
 
-void EnvironmentNav3DCollisions::drawPose(double x, double y, double theta, int i){
-    visualization_msgs::MarkerArray arr;
-    std_msgs::ColorRGBA col;
-    col.r = 0.0;
-    col.g = 1.0;
-    col.b = 1.0;
-    col.a = 1.0;
-    updateRobotPosition(x, y, theta);
-    char buf[32];
-    sprintf(buf,"robot_goal%d",i);
-    m_planningCollisionModel.getRobotMarkersGivenState(*m_kinematicState, arr, col, buf, ros::Duration(0));
-    //col.b = 1.0;
-    //m_planningCollisionModel.getAttachedCollisionObjectMarkers(*m_kinematicState, arr, "attached", col, ros::Duration(0.0));
-    m_collisionMarkerPub.publish(arr);
+void EnvironmentNav3DCollisions::drawPose(double x, double y, double theta, int i)
+{
+/////  visualization_msgs::MarkerArray arr;
+/////  std_msgs::ColorRGBA col;
+/////  col.r = 0.0;
+/////  col.g = 1.0;
+/////  col.b = 1.0;
+/////  col.a = 1.0;
+  updateRobotPosition(x, y, theta);
+/////  char buf[32];
+/////  sprintf(buf,"robot_goal%d",i);
+/////  m_planningCollisionModel.getRobotMarkersGivenState(*m_kinematicState, arr, col, buf, ros::Duration(0));
+/////  //col.b = 1.0;
+/////  //m_planningCollisionModel.getAttachedCollisionObjectMarkers(*m_kinematicState, arr, "attached", col, ros::Duration(0.0));
+/////  m_collisionMarkerPub.publish(arr);
 }
 
 // Start postion in costmap frame!
@@ -3130,4 +3086,3 @@ void EnvironmentNav3DCollisionsBase::printFootprint(char* filename, vector<sbpl_
   fclose(fout);
   printf("end print\n");
 }
-

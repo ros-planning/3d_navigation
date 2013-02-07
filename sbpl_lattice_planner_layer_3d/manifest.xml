@@ -9,7 +9,6 @@
   <review status="unreviewed" notes=""/>
   <url>http://ros.org/wiki/sbpl_lattice_planner_3d</url>
   <depend package="roscpp"/>
-  <depend package="sbpl"/>
   <depend package="costmap_2d"/>
   <depend package="nav_core"/>
   <depend package="pluginlib"/>
@@ -19,8 +18,9 @@
   <depend package="octomap_server"/>
   <depend package="planning_models" />
   <depend package="planning_environment" />
-  <depend package="pose_follower" />
   <depend package="opencv2" />
+
+  <rosdep name="sbpl"/>
 
   <export>
     <cpp cflags="-I${prefix}/include" lflags="-Wl,-rpath,${prefix}/lib -L${prefix}/lib -lsbpl_lattice_planner_layer_3d"/>

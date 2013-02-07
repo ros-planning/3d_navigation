@@ -130,7 +130,7 @@ public:
 	unsigned char GetMapCost(int X, int Y, int levind);
 
 
-   EnvironmentNAVXYTHETAMLEVLAT3D();
+   EnvironmentNAVXYTHETAMLEVLAT3D( planning_scene_monitor::PlanningSceneMonitorPtr planning_scene_monitor );
    ~EnvironmentNAVXYTHETAMLEVLAT3D();
 
   bool setFootprint(int levelind, const vector<sbpl_2Dpt_t> perimeterptsV);
