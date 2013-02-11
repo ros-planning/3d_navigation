@@ -37,24 +37,28 @@
 
 #include <octomap_server/OctomapServerCombined.h>
 
-namespace octomap
+namespace sbpl_lattice_planner_layer_3d
 {
 
-OctomapServerCombined::OctomapServerCombined( const std::string& filename )
-  : m_nh(),
-    m_pointCloudSub(NULL), m_tfPointCloudSub(NULL),
-    m_octoMap(0.05),
-    m_maxRange(-1.0),
-    m_worldFrameId("/map"), m_baseFrameId("base_footprint"),
-    m_useHeightMap(true),
-    m_colorFactor(0.8),
-    m_pointcloudMinZ(-std::numeric_limits<double>::max()),
-    m_pointcloudMaxZ(std::numeric_limits<double>::max()),
-    m_occupancyMinZ(-std::numeric_limits<double>::max()),
-    m_occupancyMaxZ(std::numeric_limits<double>::max()),
-    m_minSizeX(0.0), m_minSizeY(0.0),
-    m_filterSpeckles(false), m_filterGroundPlane(true),
-    m_groundFilterDistance(0.04), m_groundFilterAngle(0.15), m_groundFilterPlaneDistance(0.07)
+OctomapLayerProjector::OctomapLayerProjector( octomap::OcTree* octree )
+  : m_nh()
+  , m_maxRange(-1.0)
+  , m_worldFrameId("/map")
+  , m_baseFrameId("base_footprint")
+  , m_useHeightMap(true)
+  , m_colorFactor(0.8)
+  , m_pointcloudMinZ(-std::numeric_limits<double>::max())
+  , m_pointcloudMaxZ(std::numeric_limits<double>::max())
+  , m_occupancyMinZ(-std::numeric_limits<double>::max())
+  , m_occupancyMaxZ(std::numeric_limits<double>::max())
+  , m_minSizeX(0.0)
+  , m_minSizeY(0.0)
+  , m_filterSpeckles(false)
+  , m_filterGroundPlane(true)
+  , m_groundFilterDistance(0.04)
+  , m_groundFilterAngle(0.15)
+  , m_groundFilterPlaneDistance(0.07)
+  , octree_( octree )
 {
   haveAttachedObject = false;
   ros::NodeHandle private_nh("~");
@@ -79,12 +83,14 @@ OctomapServerCombined::OctomapServerCombined( const std::string& filename )
   // distance of found plane from z=0 to be detected as ground (e.g. to exclude tables)
   private_nh.param("ground_filter/plane_distance", m_groundFilterPlaneDistance, m_groundFilterPlaneDistance);
 
-  double res = 0.05;
-  private_nh.param("resolution", res, res);
-  m_octoMap.octree.setResolution(res);
+// I don't think the resolution is up to me at this point.  Should be set by owner of octree.
+//  double res = 0.05;
+//  private_nh.param("resolution", res, res);
+//  octree_->setResolution(res);
 
   private_nh.param("sensor_model/max_range", m_maxRange, m_maxRange);
 
+// Should these live here, or in planner?
   double probHit = 0.7;
   double probMiss = 0.4;
   double thresMin = 0.12;
@@ -93,10 +99,10 @@ OctomapServerCombined::OctomapServerCombined( const std::string& filename )
   private_nh.param("sensor_model/miss", probMiss, probMiss);
   private_nh.param("sensor_model/min", thresMin, thresMin);
   private_nh.param("sensor_model/max", thresMax, thresMax);
-  m_octoMap.octree.setProbHit(probHit);
-  m_octoMap.octree.setProbMiss(probMiss);
-  m_octoMap.octree.setClampingThresMin(thresMin);
-  m_octoMap.octree.setClampingThresMax(thresMax);
+  octree_->setProbHit(probHit);
+  octree_->setProbMiss(probMiss);
+  octree_->setClampingThresMin(thresMin);
+  octree_->setClampingThresMax(thresMax);
 
   double r, g, b, a;
   private_nh.param("color/r", r, 0.0);
@@ -122,14 +128,14 @@ OctomapServerCombined::OctomapServerCombined( const std::string& filename )
   arm_mapPub = m_nh.advertise<nav_msgs::OccupancyGrid>("arm_map", 5, staticMap);
   boundPub = m_nh.advertise<visualization_msgs::Marker>("arm_bound_box",1);
 
-  m_octomapService = m_nh.advertiseService("octomap_binary", &OctomapServerCombined::serviceCallback, this);
-  m_clearBBXService = private_nh.advertiseService("clear_bbx", &OctomapServerCombined::clearBBXSrv, this);
+  m_octomapService = m_nh.advertiseService("octomap_binary", &OctomapLayerProjector::serviceCallback, this);
+  m_clearBBXService = private_nh.advertiseService("clear_bbx", &OctomapLayerProjector::clearBBXSrv, this);
 
   // a filename to load is set => distribute a static map latched
   if (filename != ""){
     //if (staticMap){
-    if (m_octoMap.octree.readBinary(filename)){
-      ROS_INFO("Octomap file %s loaded (%zu nodes).", filename.c_str(),m_octoMap.octree.size());
+    if (octree_->readBinary(filename)){
+      ROS_INFO("Octomap file %s loaded (%zu nodes).", filename.c_str(),octree_->size());
 
       publishAll();
     } else{
@@ -137,38 +143,19 @@ OctomapServerCombined::OctomapServerCombined( const std::string& filename )
       exit(-1);
     }
   } //else { // otherwise: do scan integration
-
-
-
-  m_pointCloudSub = new message_filters::Subscriber<sensor_msgs::PointCloud2> (m_nh, "cloud_in", 5);
-  m_tfPointCloudSub = new tf::MessageFilter<sensor_msgs::PointCloud2> (*m_pointCloudSub, m_tfListener, m_worldFrameId, 5);
-  m_tfPointCloudSub->registerCallback(boost::bind(&OctomapServerCombined::insertCloudCallback, this, _1));
-  //}
-
-    
-  attachedObjectsSub = m_nh.subscribe("attached_collision_object", 1, &OctomapServerCombined::attachedCallback, this);
 }
 
-OctomapServerCombined::~OctomapServerCombined(){
-  if (m_tfPointCloudSub)
-    delete m_tfPointCloudSub;
-  if (m_pointCloudSub)
-    delete m_pointCloudSub;
-
+OctomapLayerProjector::~OctomapLayerProjector()
+{
 }
 
-void OctomapServerCombined::attachedCallback(const mapping_msgs::AttachedCollisionObjectConstPtr& msg){
-  ROS_DEBUG("AttachedCollisionObjects received");
-  haveAttachedObject = msg->object.operation.operation == mapping_msgs::CollisionObjectOperation::ATTACH_AND_REMOVE_AS_OBJECT;
-  if(haveAttachedObject){
-    attachedFrame = msg->link_name;
-    attachedMaxOffset = msg->object.poses.back().position.z + msg->object.shapes.back().dimensions[1];
-    attachedMinOffset = msg->object.poses.back().position.z - msg->object.shapes.back().dimensions[1];
-  }
-}
-
+///// Hopefully insertCloudCallback() is not needed here because its
+///// functionality should have been moved into MoveIt somewhere.  I
+///// still need to compare this function to whatever is in MoveIt to
+///// make sure there are no 3d-nav-specific changes here.
+#if 0
 // This is called whenever a new point cloud is received.
-void OctomapServerCombined::insertCloudCallback( const sensor_msgs::PointCloud2::ConstPtr& cloud )
+void OctomapLayerProjector::insertCloudCallback( const sensor_msgs::PointCloud2::ConstPtr& cloud )
 {
   ros::WallTime startTime = ros::WallTime::now();
 
@@ -213,7 +200,7 @@ void OctomapServerCombined::insertCloudCallback( const sensor_msgs::PointCloud2:
 
   if (m_filterGroundPlane){
     if (pc.size() < 50){
-      ROS_WARN("Pointcloud in OctomapServerCombined too small, skipping ground plane extraction");
+      ROS_WARN("Pointcloud in OctomapLayerProjector too small, skipping ground plane extraction");
       pc_nonground = pc;
     } else {
       // plane detection for ground plane removal:
@@ -326,8 +313,8 @@ void OctomapServerCombined::insertCloudCallback( const sensor_msgs::PointCloud2:
 //		tf::pointTFToMsg(trans.getOrigin(), sensorOrigin);
 //		m_octoMap.insertScan(transformed_cloud, sensorOrigin, m_maxRange, false, true);
 //		// TODO: eval which faster: "dirty" with updateInner?
-//		m_octoMap.octree.updateInnerOccupancy();
-//		m_octoMap.octree.prune();
+//		octree_->updateInnerOccupancy();
+//		octree_->prune();
 //
 
   // instead of direct scan insertion, compute update to filter ground:
@@ -341,7 +328,7 @@ void OctomapServerCombined::insertCloudCallback( const sensor_msgs::PointCloud2:
     }
 
     // only clear space (ground points)
-    if (m_octoMap.octree.computeRayKeys(sensorOrigin, point, m_keyRay)){
+    if (octree_->computeRayKeys(sensorOrigin, point, m_keyRay)){
       free_cells.insert(m_keyRay.begin(), m_keyRay.end());
     }
   }
@@ -353,17 +340,17 @@ void OctomapServerCombined::insertCloudCallback( const sensor_msgs::PointCloud2:
     if ((m_maxRange < 0.0) || ((point - sensorOrigin).norm() <= m_maxRange) ) {
 
       // free cells
-      if (m_octoMap.octree.computeRayKeys(sensorOrigin, point, m_keyRay)){
+      if (octree_->computeRayKeys(sensorOrigin, point, m_keyRay)){
         free_cells.insert(m_keyRay.begin(), m_keyRay.end());
       }
       // occupied endpoint
       OcTreeKey key;
-      if (m_octoMap.octree.genKey(point, key)){
+      if (octree_->genKey(point, key)){
         occupied_cells.insert(key);
       }
     } else {// ray longer than maxrange:;
       point3d new_end = sensorOrigin + (point - sensorOrigin).normalized() * m_maxRange;
-      if (m_octoMap.octree.computeRayKeys(sensorOrigin, new_end, m_keyRay)){
+      if (octree_->computeRayKeys(sensorOrigin, new_end, m_keyRay)){
         free_cells.insert(m_keyRay.begin(), m_keyRay.end());
       }
     }
@@ -372,29 +359,39 @@ void OctomapServerCombined::insertCloudCallback( const sensor_msgs::PointCloud2:
   // mark free cells only if not seen occupied in this cloud
   for(KeySet::iterator it = free_cells.begin(), end=free_cells.end(); it!= end; ++it){
     if (occupied_cells.find(*it) == occupied_cells.end()){
-      m_octoMap.octree.updateNode(*it, false, true);
+      octree_->updateNode(*it, false, true);
     }
   }
 
   // now mark all occupied cells:
   for (KeySet::iterator it = occupied_cells.begin(), end=free_cells.end(); it!= end; it++) {
-    m_octoMap.octree.updateNode(*it, true, true);
+    octree_->updateNode(*it, true, true);
   }
-  m_octoMap.octree.updateInnerOccupancy();
-  m_octoMap.octree.prune();
+  octree_->updateInnerOccupancy();
+  octree_->prune();
 
   double total_elapsed = (ros::WallTime::now() - startTime).toSec();
   ROS_DEBUG("Pointcloud insertion in OctomapServer done (%d+%d pts (ground/nonground), %f sec)", int(pc_ground.size()), int(pc_nonground.size()), total_elapsed);
 
   publishAll(cloud->header.stamp);
 }
+#endif // 0
 
+void OctomapLayerProjector::setGridSize( int grid_size_x, int grid_size_y )
+{
+  if( grid_size_x * grid_size_y != grid_size_x_ * grid_size_y_ )
+  {
+    int data_size = grid_size_x * grid_size_y;
+    deleteGrids();
+    
+  }
+}
 
-void OctomapServerCombined::publishAll( const ros::Time& rostime )
+void OctomapLayerProjector::publishAll( const ros::Time& rostime )
 {
   ros::WallTime startTime = ros::WallTime::now();
 
-  if (m_octoMap.octree.size() <= 1){
+  if (octree_->size() <= 1){
     ROS_WARN("Nothing to publish, octree is empty");
     return;
   }
@@ -419,13 +416,13 @@ void OctomapServerCombined::publishAll( const ros::Time& rostime )
 
   // init markers:
   double minX, minY, minZ, maxX, maxY, maxZ;
-  m_octoMap.octree.getMetricMin(minX, minY, minZ);
-  m_octoMap.octree.getMetricMax(maxX, maxY, maxZ);
+  octree_->getMetricMin(minX, minY, minZ);
+  octree_->getMetricMax(maxX, maxY, maxZ);
 
   visualization_msgs::MarkerArray occupiedNodesVis;
   // each array stores all cubes of a different size, one for each depth level:
-  occupiedNodesVis.markers.resize(m_octoMap.octree.getTreeDepth());
-  double lowestRes = m_octoMap.octree.getResolution();
+  occupiedNodesVis.markers.resize(octree_->getTreeDepth());
+  double lowestRes = octree_->getResolution();
 
   // init pointcloud:
   pcl::PointCloud<pcl::PointXYZ> pclCloud;
@@ -436,30 +433,30 @@ void OctomapServerCombined::publishAll( const ros::Time& rostime )
   nav_msgs::OccupancyGrid spine_map;
   nav_msgs::OccupancyGrid arm_map;
   nav_msgs::OccupancyGrid temp_arm_map;
-  map.info.resolution = m_octoMap.octree.getResolution();
+  map.info.resolution = octree_->getResolution();
   map.header.frame_id = m_worldFrameId;
   map.header.stamp = rostime;
-  base_map.info.resolution = m_octoMap.octree.getResolution();
+  base_map.info.resolution = octree_->getResolution();
   base_map.header.frame_id = m_worldFrameId;
   base_map.header.stamp = rostime;
-  spine_map.info.resolution = m_octoMap.octree.getResolution();
+  spine_map.info.resolution = octree_->getResolution();
   spine_map.header.frame_id = m_worldFrameId;
   spine_map.header.stamp = rostime;
-  arm_map.info.resolution = m_octoMap.octree.getResolution();
+  arm_map.info.resolution = octree_->getResolution();
   arm_map.header.frame_id = m_worldFrameId;
   arm_map.header.stamp = rostime;
-  temp_arm_map.info.resolution = m_octoMap.octree.getResolution();
+  temp_arm_map.info.resolution = octree_->getResolution();
   temp_arm_map.header.frame_id = m_worldFrameId;
   temp_arm_map.header.stamp = rostime;
 
   octomap::point3d minPt(minX, minY, minZ);
   octomap::point3d maxPt(maxX, maxY, maxZ);
   octomap::OcTreeKey minKey, maxKey, curKey;
-  if (!m_octoMap.octree.genKey(minPt, minKey)){
+  if (!octree_->genKey(minPt, minKey)){
     ROS_ERROR("Could not create min OcTree key at %f %f %f", minPt.x(), minPt.y(), minPt.z());
     return;
   }
-  if (!m_octoMap.octree.genKey(maxPt, maxKey)){
+  if (!octree_->genKey(maxPt, maxKey)){
     ROS_ERROR("Could not create max OcTree key at %f %f %f", maxPt.x(), maxPt.y(), maxPt.z());
     return;
   }
@@ -477,11 +474,11 @@ void OctomapServerCombined::publishAll( const ros::Time& rostime )
   maxPt = octomap::point3d(maxX, maxY, maxZ);
 
   octomap::OcTreeKey paddedMinKey, paddedMaxKey;
-  if (!m_octoMap.octree.genKey(minPt, paddedMinKey)){
+  if (!octree_->genKey(minPt, paddedMinKey)){
     ROS_ERROR("Could not create padded min OcTree key at %f %f %f", minPt.x(), minPt.y(), minPt.z());
     return;
   }
-  if (!m_octoMap.octree.genKey(maxPt, paddedMaxKey)){
+  if (!octree_->genKey(maxPt, paddedMaxKey)){
     ROS_ERROR("Could not create padded max OcTree key at %f %f %f", maxPt.x(), maxPt.y(), maxPt.z());
     return;
   }
@@ -505,19 +502,19 @@ void OctomapServerCombined::publishAll( const ros::Time& rostime )
 
   // might not exactly be min / max of octree:
   octomap::point3d origin;
-  m_octoMap.octree.genCoords(paddedMinKey, m_octoMap.octree.getTreeDepth(), origin);
-  map.info.origin.position.x = origin.x() - m_octoMap.octree.getResolution()*0.5;
-  map.info.origin.position.y = origin.y() - m_octoMap.octree.getResolution()*0.5;
-  base_map.info.origin.position.x = origin.x() - m_octoMap.octree.getResolution()*0.5;
-  base_map.info.origin.position.y = origin.y() - m_octoMap.octree.getResolution()*0.5;
+  octree_->genCoords(paddedMinKey, octree_->getTreeDepth(), origin);
+  map.info.origin.position.x = origin.x() - octree_->getResolution()*0.5;
+  map.info.origin.position.y = origin.y() - octree_->getResolution()*0.5;
+  base_map.info.origin.position.x = origin.x() - octree_->getResolution()*0.5;
+  base_map.info.origin.position.y = origin.y() - octree_->getResolution()*0.5;
   base_map.info.origin.position.z = 0.0;
-  spine_map.info.origin.position.x = origin.x() - m_octoMap.octree.getResolution()*0.5;
-  spine_map.info.origin.position.y = origin.y() - m_octoMap.octree.getResolution()*0.5;
+  spine_map.info.origin.position.x = origin.x() - octree_->getResolution()*0.5;
+  spine_map.info.origin.position.y = origin.y() - octree_->getResolution()*0.5;
   spine_map.info.origin.position.z = 0.45;
-  arm_map.info.origin.position.x = origin.x() - m_octoMap.octree.getResolution()*0.5;
-  arm_map.info.origin.position.y = origin.y() - m_octoMap.octree.getResolution()*0.5;
-  temp_arm_map.info.origin.position.x = origin.x() - m_octoMap.octree.getResolution()*0.5;
-  temp_arm_map.info.origin.position.y = origin.y() - m_octoMap.octree.getResolution()*0.5;
+  arm_map.info.origin.position.x = origin.x() - octree_->getResolution()*0.5;
+  arm_map.info.origin.position.y = origin.y() - octree_->getResolution()*0.5;
+  temp_arm_map.info.origin.position.x = origin.x() - octree_->getResolution()*0.5;
+  temp_arm_map.info.origin.position.y = origin.y() - octree_->getResolution()*0.5;
 
   // Allocate space to hold the data (init to unknown)
   map.data.resize(base_map.info.width * base_map.info.height, -1);
@@ -589,10 +586,10 @@ void OctomapServerCombined::publishAll( const ros::Time& rostime )
   boundPub.publish(m);
 
     
-  for( OcTreeROS::OcTreeType::iterator it = m_octoMap.octree.begin(), end = m_octoMap.octree.end(); it != end; ++it )
+  for( OcTreeROS::OcTreeType::iterator it = octree_->begin(), end = octree_->end(); it != end; ++it )
   {
     double z = it.getZ();
-    if (m_octoMap.octree.isNodeOccupied(*it)){
+    if (octree_->isNodeOccupied(*it)){
       if (z > m_occupancyMinZ && z < m_occupancyMaxZ)
       {
         octomap::OcTreeKey nKey = it.getKey();
@@ -605,8 +602,8 @@ void OctomapServerCombined::publishAll( const ros::Time& rostime )
             for (key[1] = nKey[1] - 1; !neighborFound && key[1] <= nKey[1] + 1; ++key[1]){
               for (key[0] = nKey[0] - 1; !neighborFound && key[0] <= nKey[0] + 1; ++key[0]){
                 if (key != nKey){
-                  OcTreeNode* node = m_octoMap.octree.search(key);
-                  if (node && m_octoMap.octree.isNodeOccupied(node)){
+                  OcTreeNode* node = octree_->search(key);
+                  if (node && octree_->isNodeOccupied(node)){
                     // we have a neighbor => break!
                     neighborFound = true;
                   }
@@ -658,7 +655,7 @@ void OctomapServerCombined::publishAll( const ros::Time& rostime )
         // update 2D map (occupied always overrides):
         if (publish2DMap)
         {
-          if (it.getDepth() == m_octoMap.octree.getTreeDepth())
+          if (it.getDepth() == octree_->getTreeDepth())
           {
             int i = nKey[0] - paddedMinKey[0];
             int j = nKey[1] - paddedMinKey[1];
@@ -682,7 +679,7 @@ void OctomapServerCombined::publishAll( const ros::Time& rostime )
           }
           else
           {
-            int intSize = 1 << (m_octoMap.octree.getTreeDepth() - it.getDepth());
+            int intSize = 1 << (octree_->getTreeDepth() - it.getDepth());
             octomap::OcTreeKey minKey=it.getIndexKey();
             for(int dx=0; dx < intSize; dx++){
               int i = minKey[0]+dx - paddedMinKey[0];
@@ -711,7 +708,7 @@ void OctomapServerCombined::publishAll( const ros::Time& rostime )
       }
     } else{ // node not occupied => mark as free in 2D map if unknown so far
       if (publish2DMap){
-        if (it.getDepth() == m_octoMap.octree.getTreeDepth()){
+        if (it.getDepth() == octree_->getTreeDepth()){
           octomap::OcTreeKey nKey = it.getKey();
           int i = nKey[0] - paddedMinKey[0];
           int j = nKey[1] - paddedMinKey[1];
@@ -726,7 +723,7 @@ void OctomapServerCombined::publishAll( const ros::Time& rostime )
           if(z>=minArmHeight && z<=maxArmHeight)
             temp_arm_map.data[arm_map.info.width*j + i]++;
         } else{
-          int intSize = 1 << (m_octoMap.octree.getTreeDepth() - it.getDepth());
+          int intSize = 1 << (octree_->getTreeDepth() - it.getDepth());
           octomap::OcTreeKey minKey=it.getIndexKey();
           for(int dx=0; dx < intSize; dx++){
             int i = minKey[0]+dx - paddedMinKey[0];
@@ -850,7 +847,7 @@ void OctomapServerCombined::publishAll( const ros::Time& rostime )
 }
 
 
-bool OctomapServerCombined::serviceCallback(octomap_ros::GetOctomap::Request  &req,
+bool OctomapLayerProjector::serviceCallback(octomap_ros::GetOctomap::Request  &req,
                                             octomap_ros::GetOctomap::Response &res)
 {
   ROS_INFO("Sending map data on service request");
@@ -861,24 +858,24 @@ bool OctomapServerCombined::serviceCallback(octomap_ros::GetOctomap::Request  &r
   return true;
 }
 
-bool OctomapServerCombined::clearBBXSrv(octomap_ros::ClearBBXRegionRequest& req, octomap_ros::ClearBBXRegionRequest& resp){
+bool OctomapLayerProjector::clearBBXSrv(octomap_ros::ClearBBXRegionRequest& req, octomap_ros::ClearBBXRegionRequest& resp){
   OcTreeROS::OcTreeType::leaf_bbx_iterator it, end;
   point3d min = pointMsgToOctomap(req.min);
   point3d max = pointMsgToOctomap(req.max);
 
-  for(OcTreeROS::OcTreeType::leaf_bbx_iterator it = m_octoMap.octree.begin_leafs_bbx(min,max),
-        end=m_octoMap.octree.end_leafs_bbx(); it!= end; ++it){
+  for(OcTreeROS::OcTreeType::leaf_bbx_iterator it = octree_->begin_leafs_bbx(min,max),
+        end=octree_->end_leafs_bbx(); it!= end; ++it){
     it->setLogOdds(-2);
-//			m_octoMap.octree.updateNode(it.getKey(), -6.0f);
+//			octree_->updateNode(it.getKey(), -6.0f);
   }
-  m_octoMap.octree.updateInnerOccupancy();
+  octree_->updateInnerOccupancy();
 
   publishAll(ros::Time::now());
 
   return true;
 }
 
-void OctomapServerCombined::publishMap(const ros::Time& rostime){
+void OctomapLayerProjector::publishMap(const ros::Time& rostime){
 
   octomap_ros::OctomapBinary map;
   map.header.frame_id = m_worldFrameId;
@@ -889,7 +886,7 @@ void OctomapServerCombined::publishMap(const ros::Time& rostime){
   m_binaryMapPub.publish(map);
 }
 
-std_msgs::ColorRGBA OctomapServerCombined::heightMapColor(double h) const {
+std_msgs::ColorRGBA OctomapLayerProjector::heightMapColor(double h) const {
 
   std_msgs::ColorRGBA color;
   color.a = 1.0;

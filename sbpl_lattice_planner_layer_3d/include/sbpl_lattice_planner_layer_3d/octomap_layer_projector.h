@@ -1,13 +1,6 @@
-/**
-* octomap_server: A Tool to serve 3D OctoMaps in ROS (binary and as visualization)
-* (inspired by the ROS map_saver)
-* @author A. Hornung, University of Freiburg, Copyright (C) 2010-2011.
-* @see http://octomap.sourceforge.net/
-* License: BSD
-*/
-
 /*
  * Copyright (c) 2010-2011, A. Hornung, University of Freiburg
+ * Copyright (c) 2013, Willow Garage
  * All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without
@@ -34,7 +27,6 @@
  * ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE
  * POSSIBILITY OF SUCH DAMAGE.
  */
-
 
 #include <ros/ros.h>
 #include <visualization_msgs/MarkerArray.h>
@@ -66,14 +58,20 @@
 #include <mapping_msgs/AttachedCollisionObject.h>
 
 
-namespace octomap
+namespace sbpl_lattice_planner_layer_3d
 {
 
-class OctomapServerCombined
+/** @brief This class projects 3 slices of an OcTree down to 3 2D
+ *  occupancy grids.
+ *
+ *  Currently this code is very specific to the needs of 3D navigation.
+ *
+ *  This is a port of OctomapServerCombined. */
+class OctomapLayerProjector
 {
 public:
-  OctomapServerCombined( const std::string& filename= "" );
-  virtual ~OctomapServerCombined();
+  OctomapLayerProjector( const std::string& filename= "" );
+  virtual ~OctomapLayerProjector();
 
   bool serviceCallback( octomap_ros::GetOctomap::Request &req,
                         octomap_ros::GetOctomap::Response &res );
@@ -104,10 +102,6 @@ protected:
     arm_mapPub,
     boundPub;
 
-  message_filters::Subscriber<sensor_msgs::PointCloud2>* m_pointCloudSub;
-
-  tf::MessageFilter<sensor_msgs::PointCloud2>* m_tfPointCloudSub;
-
   ros::ServiceServer m_octomapService, m_clearBBXService;
 
   tf::TransformListener m_tfListener;
@@ -121,7 +115,6 @@ protected:
 
   bool haveAttachedObject;
 
-  OcTreeROS m_octoMap;
   KeyRay m_keyRay;  // temp storage for ray casting
   double m_maxRange;
   std::string m_worldFrameId; // the map frame
@@ -142,8 +135,21 @@ protected:
   double m_groundFilterDistance;
   double m_groundFilterAngle;
   double m_groundFilterPlaneDistance;
+
+  /** @brief Pointer to the octree instance managed by the planning scene monitor.
+   *
+   * Will likely become a boost::shared_ptr I guess. */
+  OcTree* octree_;
+
+  // All projected grids have same dimensions.
+  int grid_size_x_;
+  int grid_size_y_;
+  char* full_grid_; ///< I'm not sure what this is for exactly.
+  char* base_grid_;
+  char* spine_grid_;
+  char* arm_grid_;
 };
 
-} // end namespace octomap
+} // end namespace sbpl_lattice_planner_layer_3d
 
 
